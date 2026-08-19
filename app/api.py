@@ -1,0 +1,355 @@
+"""FastAPI backend.
+
+Deployed separately from the frontend because it needs a real disk: the
+chunk store, the FTS index and the embedding matrices are files, and
+ingestion writes to them for minutes at a time. Vercel serves the UI and
+calls this.
+
+The endpoints mirror the design's API table. Positions are always word
+offsets on the wire; pages are a presentation concern the client owns.
+"""
+from __future__ import annotations
+
+import os
+import uuid
+from pathlib import Path
+from contextlib import asynccontextmanager, closing
+
+from fastapi import (BackgroundTasks, FastAPI, File, Form, HTTPException,
+                     UploadFile)
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from app.agents import llm
+from app.config import WORDS_PER_PAGE
+from app.graph import ask
+from app.ingestion import sources, upload
+from app.ingestion.pipeline import ingest_file, ingest_from_gutenberg
+from app.store import db, vectors
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    # a background ingest belongs to one process; if we are starting up, any
+    # job still marked in-flight was owned by a process that is now gone
+    with closing(db.connect()) as conn:
+        if reaped := db.reap_orphan_jobs(conn):
+            print(f"reaped {reaped} orphaned ingest job(s)")
+    yield
+
+
+api = FastAPI(title="Spoiler-Safe Reading Companion", version="0.1.0",
+              lifespan=_lifespan)
+
+# the Vercel deployment origin, plus local dev
+_origins = [o for o in os.environ.get("CORS_ORIGINS", "").split(",") if o] or [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["*"],
+)
+
+
+# -- schemas ---------------------------------------------------------------
+
+class BookOut(BaseModel):
+    id: str
+    title: str
+    author: str
+    total_words: int
+    total_pages: int
+    n_chunks: int
+    license: str
+    words_per_page: int = WORDS_PER_PAGE
+
+
+class ResolveIn(BaseModel):
+    query: str = Field(min_length=2, max_length=200)
+
+
+class CandidateOut(BaseModel):
+    book_id: str
+    title: str
+    author: str
+    fmt: str
+    indexed: bool
+
+
+class JobOut(BaseModel):
+    id: str
+    query: str
+    status: str          # queued | running | done | failed
+    book_id: str | None = None
+    message: str = ""
+
+
+class SessionIn(BaseModel):
+    book_id: str
+    position: int = 0
+
+
+class SessionOut(BaseModel):
+    id: str
+    book_id: str
+    position: int
+    page: int
+
+
+class PositionIn(BaseModel):
+    position: int | None = None
+    page: int | None = None
+
+
+class ChatIn(BaseModel):
+    session_id: str
+    question: str = Field(min_length=2, max_length=500)
+    position: int | None = None
+
+
+class EvidenceOut(BaseModel):
+    chunk_id: str
+    chapter: int
+    page: int
+    word_start: int
+    word_end: int
+    via: str
+    similarity: float
+    text: str
+
+
+class ChatOut(BaseModel):
+    answer: str
+    outcome: str
+    intent: str | None = None
+    position: int
+    n_eligible: int
+    n_withheld: int
+    evidence: list[EvidenceOut]
+
+
+# -- helpers ---------------------------------------------------------------
+
+def _book_out(b) -> BookOut:
+    return BookOut(id=b.id, title=b.title, author=b.author,
+                   total_words=b.total_words, total_pages=b.total_pages,
+                   n_chunks=b.n_chunks, license=b.license)
+
+
+# -- routes ----------------------------------------------------------------
+
+@api.get("/health")
+def health() -> dict:
+    with closing(db.connect()) as conn:
+        ready = [b for b in db.list_books(conn) if vectors.exists(b.id)]
+    return {"status": "ok", "books_indexed": len(ready),
+            "answer_provider": llm.provider_name()}
+
+
+@api.get("/books", response_model=list[BookOut])
+def list_books() -> list[BookOut]:
+    with closing(db.connect()) as conn:
+        return [_book_out(b) for b in db.list_books(conn) if vectors.exists(b.id)]
+
+
+@api.get("/books/{book_id}", response_model=BookOut)
+def get_book(book_id: str) -> BookOut:
+    with closing(db.connect()) as conn:
+        book = db.get_book(conn, book_id)
+    if book is None or not vectors.exists(book_id):
+        raise HTTPException(404, "book not indexed")
+    return _book_out(book)
+
+
+@api.post("/books/resolve", response_model=list[CandidateOut])
+def resolve(body: ResolveIn) -> list[CandidateOut]:
+    """Search permitted sources. Does not download -- that is /books/ingest."""
+    try:
+        found = sources.search(body.query, limit=5)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"source lookup failed: {exc}") from exc
+    with closing(db.connect()) as conn:
+        return [
+            CandidateOut(
+                book_id=c.book_id, title=c.title, author=c.author, fmt=c.fmt,
+                indexed=(db.get_book(conn, c.book_id) is not None
+                         and vectors.exists(c.book_id)),
+            )
+            for c in found
+        ]
+
+
+def _run_ingest(job_id: str, query: str) -> None:
+    """Background worker. Downloads, chunks and embeds -- minutes of work."""
+    with closing(db.connect()) as conn:
+        db.update_job(conn, job_id, "running", "resolving source")
+    try:
+        book = ingest_from_gutenberg(query)
+    except LookupError as exc:
+        with closing(db.connect()) as conn:
+            db.update_job(conn, job_id, "failed", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        with closing(db.connect()) as conn:
+            db.update_job(conn, job_id, "failed", f"{type(exc).__name__}: {exc}")
+    else:
+        with closing(db.connect()) as conn:
+            db.update_job(conn, job_id, "done",
+                          f"indexed {book.n_chunks} chunks", book.id)
+
+
+@api.post("/books/ingest", response_model=JobOut, status_code=202)
+def ingest(body: ResolveIn, background: BackgroundTasks) -> JobOut:
+    """Start an ingest and return immediately.
+
+    Downloading, chunking and embedding a novel takes minutes -- far longer
+    than any browser or proxy will hold a connection open. The client polls
+    /books/ingest/{job_id}.
+    """
+    query = body.query.strip()
+    with closing(db.connect()) as conn:
+        if existing := db.active_job_for(conn, query):
+            return JobOut(**existing)          # don't start a second one
+        job_id = f"job-{uuid.uuid4().hex[:12]}"
+        job = db.create_job(conn, job_id, query)
+
+    background.add_task(_run_ingest, job_id, query)
+    return JobOut(**job)
+
+
+def _run_upload_ingest(job_id: str, path: str, book_id: str,
+                       title: str, author: str) -> None:
+    """Background worker for an uploaded file."""
+    with closing(db.connect()) as conn:
+        db.update_job(conn, job_id, "running", "parsing and indexing")
+    try:
+        book = ingest_file(Path(path), book_id=book_id, title=title,
+                           author=author, source="upload", source_url="",
+                           license="user-supplied copy")
+    except Exception as exc:  # noqa: BLE001
+        with closing(db.connect()) as conn:
+            db.update_job(conn, job_id, "failed", f"{type(exc).__name__}: {exc}")
+    else:
+        with closing(db.connect()) as conn:
+            db.update_job(conn, job_id, "done",
+                          f"indexed {book.n_chunks} chunks", book.id)
+
+
+@api.post("/books/upload", response_model=JobOut, status_code=202)
+async def upload_book(background: BackgroundTasks,
+                      file: UploadFile = File(...),
+                      title: str = Form(""),
+                      author: str = Form("")) -> JobOut:
+    """Index a book the reader already owns.
+
+    Gutenberg only carries public-domain work, so anything still in copyright
+    can only arrive this way -- from the reader's own DRM-free file.
+    """
+    data = await file.read()
+    try:
+        path, book_id, _digest = upload.store(file.filename or "book.txt", data)
+    except upload.UploadRejected as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    # prefer what the reader typed, then the file's own metadata, then the name
+    meta_title, meta_author = (upload.epub_metadata(path)
+                               if path.suffix == ".epub" else (None, None))
+    title = title.strip() or meta_title or Path(file.filename or "").stem or "Untitled"
+    author = author.strip() or meta_author or "Unknown"
+
+    with closing(db.connect()) as conn:
+        job_id = f"job-{uuid.uuid4().hex[:12]}"
+        job = db.create_job(conn, job_id, f"upload: {title}")
+
+    background.add_task(_run_upload_ingest, job_id, str(path), book_id,
+                        title, author)
+    return JobOut(**job)
+
+
+@api.get("/books/ingest/{job_id}", response_model=JobOut)
+def ingest_status(job_id: str) -> JobOut:
+    with closing(db.connect()) as conn:
+        job = db.get_job(conn, job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    return JobOut(**job)
+
+
+@api.post("/sessions", response_model=SessionOut)
+def create_session(body: SessionIn) -> SessionOut:
+    with closing(db.connect()) as conn:
+        if db.get_book(conn, body.book_id) is None:
+            raise HTTPException(404, "book not indexed")
+        sid = f"s-{uuid.uuid4().hex[:12]}"
+        s = db.create_session(conn, sid, body.book_id, body.position)
+    return SessionOut(**s, page=s["position"] // WORDS_PER_PAGE)
+
+
+@api.get("/sessions/{session_id}", response_model=SessionOut)
+def read_session(session_id: str) -> SessionOut:
+    with closing(db.connect()) as conn:
+        s = db.get_session(conn, session_id)
+    if s is None:
+        raise HTTPException(404, "no such session")
+    return SessionOut(**s, page=s["position"] // WORDS_PER_PAGE)
+
+
+@api.patch("/sessions/{session_id}/position", response_model=SessionOut)
+def update_position(session_id: str, body: PositionIn) -> SessionOut:
+    if body.position is None and body.page is None:
+        raise HTTPException(422, "supply either position (words) or page")
+    position = (body.position if body.position is not None
+                else body.page * WORDS_PER_PAGE)
+    with closing(db.connect()) as conn:
+        try:
+            s = db.set_position(conn, session_id, position)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    if s is None:
+        raise HTTPException(404, "no such session")
+    return SessionOut(**s, page=s["position"] // WORDS_PER_PAGE)
+
+
+@api.get("/sessions/{session_id}/history")
+def history(session_id: str) -> list[dict]:
+    with closing(db.connect()) as conn:
+        if db.get_session(conn, session_id) is None:
+            raise HTTPException(404, "no such session")
+        return db.session_history(conn, session_id)
+
+
+@api.post("/chat", response_model=ChatOut)
+def chat(body: ChatIn) -> ChatOut:
+    with closing(db.connect()) as conn:
+        session = db.get_session(conn, body.session_id)
+        if session is None:
+            raise HTTPException(404, "no such session")
+        # the client may move the slider and ask in one gesture; persist the
+        # new position first so the session stays the single source of truth
+        if body.position is not None and body.position != session["position"]:
+            session = db.set_position(conn, body.session_id, body.position)
+
+    out = ask(body.session_id, session["book_id"], body.question,
+              session["position"])
+
+    return ChatOut(
+        answer=out["answer"],
+        outcome=out["outcome"],
+        intent=out.get("intent"),
+        position=session["position"],
+        n_eligible=out.get("n_p", 0),
+        n_withheld=out.get("n_withheld", 0),
+        evidence=[
+            EvidenceOut(
+                chunk_id=e.chunk.id, chapter=e.chunk.chapter, page=e.chunk.page,
+                word_start=e.chunk.word_start, word_end=e.chunk.word_end,
+                via=e.via, similarity=round(e.similarity, 4), text=e.chunk.text,
+            )
+            for e in out.get("evidence", [])
+        ],
+    )
+
+
+app = api  # uvicorn / ASGI entrypoint convention

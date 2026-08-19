@@ -1,0 +1,22 @@
+# Render blueprint for the backend. The free tier sleeps after inactivity;
+# the first request after a sleep pays a cold start.
+services:
+  - type: web
+    name: reading-companion-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false          # set in the Render dashboard, never in git
+      - key: CORS_ORIGINS
+        sync: false          # e.g. https://your-app.vercel.app
+    disk:
+      name: companion-data
+      mountPath: /data
+      sizeGB: 1

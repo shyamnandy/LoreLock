@@ -1,0 +1,51 @@
+{
+  "book_id": "synth-glasswing",
+  "title": "The Glasswing Affair",
+  "author": "Synthetic Fixture",
+  "total_words": 15487,
+  "words_per_page": 250,
+  "questions": [
+    {
+      "key": "marcus_role",
+      "question": "Who is Marcus Vale and what does he do?",
+      "reveal_word": 572,
+      "reveal_page": 3,
+      "answer_contains": "wardenscrip"
+    },
+    {
+      "key": "elena_meeting",
+      "question": "How do Elena and Marcus know each other?",
+      "reveal_word": 2786,
+      "reveal_page": 12,
+      "answer_contains": "saltmarrow"
+    },
+    {
+      "key": "brass_key",
+      "question": "What is the significance of the brass key?",
+      "reveal_word": 5003,
+      "reveal_page": 21,
+      "answer_contains": "kestrelvault"
+    },
+    {
+      "key": "tobias_lie",
+      "question": "Why did Tobias leave the harbour that night?",
+      "reveal_word": 8311,
+      "reveal_page": 34,
+      "answer_contains": "tallowbribe"
+    },
+    {
+      "key": "culprit",
+      "question": "Who forged the shipping ledgers?",
+      "reveal_word": 12745,
+      "reveal_page": 51,
+      "answer_contains": "quillhand"
+    },
+    {
+      "key": "motive",
+      "question": "Why were the ledgers forged?",
+      "reveal_word": 13849,
+      "reveal_page": 56,
+      "answer_contains": "nightglass"
+    }
+  ]
+}
