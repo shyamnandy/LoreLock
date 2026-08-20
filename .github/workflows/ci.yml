@@ -59,6 +59,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Required for cache-to/cache-from: type=gha below. The default docker
+      # driver cannot export a cache, so without buildx the step fails in
+      # seconds, long before it ever starts building.
+      - uses: docker/setup-buildx-action@v3
+
       # Catches the failure mode that matters here: the image builds locally
       # but not on Render, which is where it is actually built.
       - uses: docker/build-push-action@v6

@@ -541,7 +541,9 @@ export default function App() {
                 </button>
               </div>
               <p className="sub">
-                Public-domain titles from Project Gutenberg.
+                {searching
+                  ? "Searching Project Gutenberg — the catalogue API is slow from our host, so this can take up to a minute."
+                  : "Public-domain titles from Project Gutenberg."}
               </p>
 
               {candidates && !ingesting && (
