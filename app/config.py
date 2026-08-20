@@ -46,8 +46,31 @@ CHUNK_WORDS = 320
 CHUNK_OVERLAP = 80
 
 # --- embeddings -----------------------------------------------------------
-EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-EMBED_DIM = 384
+# local  -- fastembed/ONNX in this process. Hermetic and free, but the model
+#           is ~190 MB resident, which is most of a small instance.
+# voyage -- MongoDB's embedding API. Keeps the model out of the container;
+#           costs a network call and per-token billing.
+#
+# Retrieval does NOT move either way: app/retrieval/firewall.py still slices
+# `E[:n_p]` locally, so the spoiler bound stays structural rather than
+# becoming a filter someone has to remember to write.
+EMBED_PROVIDER = os.environ.get("EMBED_PROVIDER", "local").lower()
+
+# (model, dimension). The dimension is not cosmetic -- it is the width of
+# every matrix already written to disk and to Atlas, and vectors.save()
+# rejects a mismatch. Changing provider or model therefore invalidates every
+# stored embedding and requires a full re-index.
+_EMBED_DEFAULTS = {
+    "local": ("BAAI/bge-small-en-v1.5", 384),
+    "voyage": (os.environ.get("VOYAGE_MODEL", "voyage-3.5-lite"),
+               int(os.environ.get("VOYAGE_DIM", "1024"))),
+}
+if EMBED_PROVIDER not in _EMBED_DEFAULTS:
+    raise ValueError(
+        f"unknown EMBED_PROVIDER {EMBED_PROVIDER!r}; "
+        f"expected one of {sorted(_EMBED_DEFAULTS)}"
+    )
+EMBED_MODEL, EMBED_DIM = _EMBED_DEFAULTS[EMBED_PROVIDER]
 
 # --- retrieval ------------------------------------------------------------
 # 5 not 8: each chunk is now ~320 words, and neighbour expansion triples the

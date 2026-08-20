@@ -25,7 +25,7 @@ from app.config import RAW, WORDS_PER_PAGE
 from app.graph import ask
 from app.ingestion import sources, upload
 from app.ingestion.pipeline import ingest_file, ingest_from_gutenberg
-from app.store import db, remote, vectors
+from app.store import db, embedders, remote, vectors
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
@@ -166,10 +166,19 @@ def _page_of(conn, book_id: str, position: int) -> int:
 
 @api.get("/health")
 def health() -> dict:
+    """Also reports which build is serving.
+
+    Without this there is no way to tell a deployed fix from an undeployed
+    one except by guessing at behaviour, and behaviour is a bad proxy: a
+    restart clears in-process caches, so the same probe can read either way.
+    RENDER_GIT_COMMIT is injected by the platform; "unknown" locally.
+    """
     with closing(db.connect()) as conn:
         ready = [b for b in db.list_books(conn) if vectors.exists(b.id)]
     return {"status": "ok", "books_indexed": len(ready),
-            "answer_provider": llm.provider_name()}
+            "answer_provider": llm.provider_name(),
+            "embed_provider": embedders.provider_name(),
+            "commit": os.environ.get("RENDER_GIT_COMMIT", "unknown")[:7]}
 
 
 @api.get("/books", response_model=list[BookOut])
