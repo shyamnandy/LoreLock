@@ -25,13 +25,20 @@ from app.config import RAW, WORDS_PER_PAGE
 from app.graph import ask
 from app.ingestion import sources, upload
 from app.ingestion.pipeline import ingest_file, ingest_from_gutenberg
-from app.store import db, vectors
+from app.store import db, remote, vectors
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
-    # a background ingest belongs to one process; if we are starting up, any
-    # job still marked in-flight was owned by a process that is now gone
     with closing(db.connect()) as conn:
+        # Rebuild the local index from the system of record before serving.
+        # On a host without a persistent disk this is what makes the library
+        # survive a redeploy; on a warm disk it costs one round trip and
+        # writes nothing. No-op when MONGODB_URI is unset.
+        if hydrated := remote.hydrate(conn):
+            print(f"hydrated {hydrated} book(s) from Atlas")
+
+        # a background ingest belongs to one process; if we are starting up, any
+        # job still marked in-flight was owned by a process that is now gone
         if reaped := db.reap_orphan_jobs(conn):
             print(f"reaped {reaped} orphaned ingest job(s)")
     yield
@@ -218,6 +225,9 @@ def delete_book(book_id: str) -> None:
             raise HTTPException(404, "no such book")
         vectors.delete(book_id)
         db.delete_book(conn, book_id)
+
+    # and from the system of record, or the next boot hydrates it back
+    remote.delete_book(book_id)
 
     # uploads keep their source as RAW/{book_id}{suffix}; the suffix varies
     # (.epub, .txt, .html) so match on the stem

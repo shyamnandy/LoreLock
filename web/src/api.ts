@@ -82,11 +82,34 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+type Health = {
+  status: string;
+  books_indexed: number;
+  answer_provider: string;
+};
+
 export const api = {
-  health: () =>
-    req<{ status: string; books_indexed: number; answer_provider: string }>(
-      "/health",
-    ),
+  health: () => req<Health>("/health"),
+
+  // A free-tier host sleeps after ~15 minutes idle, so the first request
+  // after a quiet spell hits a container that is still booting -- and while
+  // it boots it also hydrates the index from Atlas and loads the embedding
+  // model. That surfaces as a connection failure, not a 503, so a single
+  // fetch would report "cannot reach the API" for a backend that is merely
+  // waking. Retry to a deadline and let the caller say so.
+  wake: async (onWaiting?: () => void): Promise<Health> => {
+    const deadline = Date.now() + 90_000;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await req<Health>("/health");
+      } catch (e) {
+        if (Date.now() > deadline) throw e;
+        onWaiting?.();
+        // back off, but cap it: a cold start is usually 30-60s
+        await new Promise((r) => setTimeout(r, Math.min(1500 * attempt, 5000)));
+      }
+    }
+  },
 
   books: () => req<Book[]>("/books"),
 

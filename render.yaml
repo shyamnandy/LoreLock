@@ -1,5 +1,13 @@
-# Render blueprint for the backend. The free tier sleeps after inactivity;
-# the first request after a sleep pays a cold start.
+# Render blueprint for the backend.
+#
+# No `disk:` block, and that is the point: persistent disks require a paid
+# instance type, and the free tier rejects a blueprint that asks for one.
+# Instead the container is disposable -- MongoDB Atlas is the system of
+# record and app/store/remote.py rebuilds the local index on boot.
+#
+# The free tier sleeps after ~15 minutes of inactivity; the first request
+# after a sleep pays a cold start (container boot + hydration, ~30-60s).
+# To remove that, upgrade to a paid plan -- no code change is needed.
 services:
   - type: web
     name: reading-companion-api
@@ -8,15 +16,15 @@ services:
     plan: free
     healthCheckPath: /health
     envVars:
+      # writable working copy; ephemeral by design, rehydrated at startup
       - key: DATA_DIR
         value: /data
       - key: LLM_PROVIDER
         value: groq
+      # --- secrets: set in the Render dashboard, never in git -------------
+      - key: MONGODB_URI
+        sync: false          # mongodb+srv://... from Atlas
       - key: GROQ_API_KEY
-        sync: false          # set in the Render dashboard, never in git
+        sync: false          # console.groq.com/keys
       - key: CORS_ORIGINS
         sync: false          # e.g. https://your-app.vercel.app
-    disk:
-      name: companion-data
-      mountPath: /data
-      sizeGB: 1

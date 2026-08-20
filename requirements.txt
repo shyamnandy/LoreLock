@@ -12,3 +12,12 @@ pytest==9.1.1
 requests==2.34.2
 fastapi==0.141.1
 uvicorn[standard]==0.52.3
+# required by /books/upload -- FastAPI raises at IMPORT time on a File/Form
+# parameter without it, so a missing pin is a container that never starts,
+# not a broken endpoint. Present in the local venv as a transitive dep,
+# which is exactly why it went unnoticed until the image was run.
+python-multipart==0.0.32
+
+# durable store for the index (app/store/remote.py). pymongo 4.x depends on
+# dnspython directly, which is what mongodb+srv:// URIs resolve through.
+pymongo==4.10.1

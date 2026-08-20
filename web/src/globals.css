@@ -1455,6 +1455,47 @@ input[type="file"]::file-selector-button:hover {
   margin: 0 0 1rem;
 }
 
+/* A cold start is not an error: the backend is booting, not broken. Reads
+   as information rather than a failure, and never replaces the error slot. */
+.waking {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--on-dark-2);
+  border-radius: var(--r-md);
+  padding: 0.7rem 1rem;
+  font-size: 0.88rem;
+  margin: 0 0 1rem;
+}
+
+.waking-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--clay, #e8977a);
+  animation: waking-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes waking-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .waking-dot {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
 .footnote {
   color: var(--on-dark-2);
   font-size: 0.76rem;

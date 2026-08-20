@@ -106,6 +106,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [provider, setProvider] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // true only while a sleeping backend is being woken; see api.wake
+  const [waking, setWaking] = useState(false);
   // the book id currently being deleted, so its row alone shows the wait
   const [deleting, setDeleting] = useState<string | null>(null);
 
@@ -141,17 +143,30 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    loadLibrary()
-      .then((list) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // The API may be a sleeping free-tier container. Wait it out rather
+        // than reporting an outage for a backend that is only booting.
+        await api.wake(() => !cancelled && setWaking(true));
+        if (cancelled) return;
+        const list = await loadLibrary();
+        if (cancelled) return;
         if (list.length) setBook(list[0]);
-      })
-      .catch((e) =>
+      } catch (e) {
+        if (cancelled) return;
         setError(
           `Cannot reach the API at ${
             import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000"
           }. Start the backend, or set VITE_API_URL. (${(e as Error).message})`,
-        ),
-      );
+        );
+      } finally {
+        if (!cancelled) setWaking(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [loadLibrary]);
 
   // A new *book* means a new session; clear the transcript with it. Keyed on
@@ -835,6 +850,13 @@ export default function App() {
             </section>
           </header>
 
+          {waking && (
+            <div className="waking" role="status">
+              <span className="waking-dot" aria-hidden="true" />
+              Waking the server. The free tier sleeps when idle, so the first
+              load can take up to a minute.
+            </div>
+          )}
           {error && !modal && <div className="error">{error}</div>}
 
           <div className="grid">
@@ -998,6 +1020,13 @@ export default function App() {
             </div>
           </header>
 
+          {waking && (
+            <div className="waking" role="status">
+              <span className="waking-dot" aria-hidden="true" />
+              Waking the server. The free tier sleeps when idle, so the first
+              load can take up to a minute.
+            </div>
+          )}
           {error && !modal && <div className="error">{error}</div>}
 
           <div className="steps">

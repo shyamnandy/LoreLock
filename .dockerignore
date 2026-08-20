@@ -1,0 +1,34 @@
+# Keep the build context small and keep secrets out of the daemon.
+# The Dockerfile COPYs only requirements.txt, app/ and scripts/, but the
+# whole context is uploaded regardless -- data/ alone is ~20 MB.
+
+.git/
+.github/
+.gitignore
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# the index: rebuilt on boot from Atlas, never baked in
+data/
+
+# frontend: deployed separately on Vercel
+web/
+
+# python
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# not needed to run the API
+tests/
+docs/
+*.md
+!README.md
