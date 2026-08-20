@@ -1,7 +1,15 @@
+# --- python ---
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# --- secrets ---
+.env
+
+# --- generated at runtime: the index, the sources, the logs ---
+# ingestion writes these; they are rebuilt by scripts/ingest.py
 data/raw/
 data/db/
-.env
-.pytest_cache/
+data/*.log
+data/.jobid

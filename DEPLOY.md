@@ -9,7 +9,7 @@ half lives on a host with a volume.
 ```
    Vercel                          Render / Fly
  ┌──────────────┐   HTTPS/CORS   ┌──────────────────────┐
- │  Next.js UI  │ ─────────────► │  FastAPI  +  volume  │
+ │   React UI   │ ─────────────► │  FastAPI  +  volume  │
  │  (static)    │                │  sqlite · npy · fts5 │
  └──────────────┘                └──────────────────────┘
 ```
@@ -63,10 +63,11 @@ environment variable:
 
 | Variable | Value |
 |---|---|
-| `NEXT_PUBLIC_API_URL` | `https://<your-api-host>` |
+| `VITE_API_URL` | `https://<your-api-host>` |
 
-It is `NEXT_PUBLIC_*` because the browser calls the API directly — which is
-also why the backend's CORS list has to name the Vercel origin. The API
+It is `VITE_*` (baked into the bundle at build time) because the browser
+calls the API directly — which is also why the backend's CORS list has to
+name the Vercel origin. The API
 already allows any `*.vercel.app` origin by regex so preview deployments
 work, but set `CORS_ORIGINS` to your real domain for production.
 
@@ -89,7 +90,7 @@ Then open the Vercel URL, drag the slider, and watch *chunks withheld* fall.
 cd web && npm run dev        # http://localhost:3000
 ```
 
-`web/.env.local` should contain `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000`.
+`web/.env.local` should contain `VITE_API_URL=http://127.0.0.1:8000`.
 
 ## Why not put the whole thing on Vercel?
 

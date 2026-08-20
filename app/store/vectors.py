@@ -27,8 +27,7 @@ def _embedder():
     import os
 
     from fastembed import TextEmbedding
-    # parallel=1 below: fastembed's worker-pool path is pathological on
-    # Windows (multi-GB RSS, no throughput gain). One process, many threads.
+    # threads=cpu_count: ONNX intra-op threads for the in-process path.
     return TextEmbedding(model_name=EMBED_MODEL, threads=os.cpu_count())
 
 
@@ -37,6 +36,12 @@ def embed_texts(texts: list[str], progress: bool = False) -> np.ndarray:
     with _model_lock:
         model = _embedder()
         out: list[np.ndarray] = []
+        # parallel=1 spawns a one-worker ParallelWorkerPool: fastembed branches
+        # on `parallel is None`, so any int takes the pool path. Measured on
+        # this corpus the pool is ~40% faster than in-process (0.75 vs 1.06
+        # s/chunk), so it stays -- but a caller running this OUTSIDE a server
+        # needs an `if __name__ == "__main__"` guard, or the spawned child
+        # re-imports the module and dies.
         for i, vec in enumerate(model.embed(texts, batch_size=32, parallel=1)):
             out.append(vec)
             if progress and (i + 1) % 64 == 0:
@@ -88,6 +93,22 @@ def save(book_id: str, matrix: np.ndarray) -> None:
         f"could not replace {final.name} after 6 attempts -- another process "
         f"is holding it open (OneDrive sync? a running API server?)"
     ) from last
+
+
+def delete(book_id: str) -> bool:
+    """Drop a book's matrix. Returns False if there was nothing to drop.
+
+    The lru_cache must be cleared before the unlink, not after: on Windows a
+    cached handle is enough to make the file undeletable, and a matrix left
+    on disk under a reused book id would be silently searched by the next
+    ingest of the same title.
+    """
+    load.cache_clear()
+    final = _path(book_id)
+    gone = final.exists()
+    final.unlink(missing_ok=True)
+    final.with_suffix(".tmp.npy").unlink(missing_ok=True)   # a crashed save
+    return gone
 
 
 def exists(book_id: str) -> bool:

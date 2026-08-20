@@ -1,5 +1,5 @@
 """SQLite store: book metadata, the full chunk table, FTS5 keyword index,
-sessions, memory facts and the conversation log.
+sessions and the conversation log.
 
 This file holds STORE B -- the whole book, every position. Nothing that
 touches an LLM is allowed to read from here directly; only `app.retrieval`
@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS books (
     checksum     TEXT NOT NULL,
     total_words  INTEGER NOT NULL,
     n_chunks     INTEGER NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'ready'
+    status       TEXT NOT NULL DEFAULT 'ready',
+    -- pages in the reader's own edition; NULL means "use our own paging"
+    edition_pages INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -59,14 +61,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     position   INTEGER NOT NULL DEFAULT 0,
     n_p        INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS memory_facts (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id       TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    fact             TEXT NOT NULL,
-    source_chunk_ids TEXT NOT NULL,
-    max_position     INTEGER NOT NULL
 );
 
 -- ingestion is minutes long, so it cannot be a synchronous request. Jobs
@@ -114,8 +108,18 @@ def connect(timeout: float = 30.0) -> sqlite3.Connection:
         # DDL takes a write lock; doing it on every connect needlessly
         # contends with a long-running ingest.
         conn.executescript(SCHEMA)
+        _migrate(conn)
         _schema_ready = True
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns that CREATE TABLE IF NOT EXISTS cannot add to a database
+    that already exists. Cheap enough to run on first connect."""
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(books)")}
+    if "edition_pages" not in have:
+        conn.execute("ALTER TABLE books ADD COLUMN edition_pages INTEGER")
+        conn.commit()
 
 
 # --------------------------------------------------------------------------
@@ -186,7 +190,7 @@ def get_book(conn: sqlite3.Connection, book_id: str) -> Book | None:
     return Book(id=r["id"], title=r["title"], author=r["author"],
                 source=r["source"], source_url=r["source_url"],
                 license=r["license"], total_words=r["total_words"],
-                n_chunks=r["n_chunks"])
+                n_chunks=r["n_chunks"], edition_pages=r["edition_pages"])
 
 
 def list_books(conn: sqlite3.Connection) -> list[Book]:
@@ -264,6 +268,53 @@ def set_position(conn: sqlite3.Connection, session_id: str, position: int) -> di
                  (position, session_id))
     conn.commit()
     return get_session(conn, session_id)
+
+
+def set_edition_pages(conn: sqlite3.Connection, book_id: str,
+                      pages: int | None) -> Book | None:
+    """Record the page count of the reader's edition, or None to clear it.
+
+    Only the mapping from page to word offset changes -- the text, the chunks
+    and the firewall are untouched, so an existing session keeps the exact
+    word position it had and merely gets relabelled.
+    """
+    if pages is not None and pages < 1:
+        raise ValueError("pages must be at least 1")
+    conn.execute("UPDATE books SET edition_pages = ? WHERE id = ?",
+                 (pages, book_id))
+    conn.commit()
+    return get_book(conn, book_id)
+
+
+def delete_book(conn: sqlite3.Connection, book_id: str) -> bool:
+    """Remove a book and everything derived from it. Returns False if the id
+    was not there.
+
+    The cascades declared in the schema are not relied on: `PRAGMA
+    foreign_keys` is per-connection and only the connection that ran the
+    DDL has it set, so the children are deleted explicitly, deepest first.
+
+    `chunks_fts` is an external-content index, which means deleting rows from
+    `chunks` leaves its own rows behind -- a stale docid whose content lookup
+    finds nothing, and the keyword half of retrieval would surface a chunk
+    the firewall no longer knows about. It is rebuilt, exactly as
+    `insert_chunks` does after a re-index.
+    """
+    if conn.execute("SELECT 1 FROM books WHERE id = ?", (book_id,)).fetchone() is None:
+        return False
+
+    with conn:                              # one transaction; all or nothing
+        conn.execute(
+            """DELETE FROM conversations WHERE session_id IN
+                 (SELECT id FROM sessions WHERE book_id = ?)""", (book_id,))
+        conn.execute("DELETE FROM sessions WHERE book_id = ?", (book_id,))
+        conn.execute("DELETE FROM chunks WHERE book_id = ?", (book_id,))
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+        # jobs are history, not children -- but a finished job pointing at a
+        # book that no longer exists would let the client re-select it
+        conn.execute("DELETE FROM ingest_jobs WHERE book_id = ?", (book_id,))
+        conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
+    return True
 
 
 def session_history(conn: sqlite3.Connection, session_id: str,

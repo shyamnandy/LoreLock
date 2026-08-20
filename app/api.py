@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.agents import llm
-from app.config import WORDS_PER_PAGE
+from app.config import RAW, WORDS_PER_PAGE
 from app.graph import ask
 from app.ingestion import sources, upload
 from app.ingestion.pipeline import ingest_file, ingest_from_gutenberg
@@ -49,7 +49,7 @@ api.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
     allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_methods=["GET", "POST", "PATCH"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -65,6 +65,9 @@ class BookOut(BaseModel):
     n_chunks: int
     license: str
     words_per_page: int = WORDS_PER_PAGE
+    # None until the reader tells us their edition; the client shows the
+    # difference between our paging and theirs when it is set.
+    edition_pages: int | None = None
 
 
 class ResolveIn(BaseModel):
@@ -97,6 +100,11 @@ class SessionOut(BaseModel):
     book_id: str
     position: int
     page: int
+
+
+class EditionIn(BaseModel):
+    # None clears the declaration and returns the book to our own paging
+    pages: int | None = Field(default=None, ge=1, le=20_000)
 
 
 class PositionIn(BaseModel):
@@ -136,7 +144,15 @@ class ChatOut(BaseModel):
 def _book_out(b) -> BookOut:
     return BookOut(id=b.id, title=b.title, author=b.author,
                    total_words=b.total_words, total_pages=b.total_pages,
-                   n_chunks=b.n_chunks, license=b.license)
+                   n_chunks=b.n_chunks, license=b.license,
+                   words_per_page=b.words_per_page,
+                   edition_pages=b.edition_pages)
+
+
+def _page_of(conn, book_id: str, position: int) -> int:
+    """Word offset -> the page number the reader would recognise."""
+    b = db.get_book(conn, book_id)
+    return position // (b.words_per_page if b else WORDS_PER_PAGE)
 
 
 # -- routes ----------------------------------------------------------------
@@ -164,6 +180,51 @@ def get_book(book_id: str) -> BookOut:
     return _book_out(book)
 
 
+@api.patch("/books/{book_id}/edition", response_model=BookOut)
+def set_edition(book_id: str, body: EditionIn) -> BookOut:
+    """Declare how many pages the reader's own edition has.
+
+    Our page numbers come from total_words // 250, which no printed edition
+    agrees with. Given the real count we rescale words-per-page instead, so
+    page N of their copy is the same fraction of the book either way. The
+    text and the chunks do not move, so a session in progress keeps its exact
+    word position and is simply relabelled.
+    """
+    with closing(db.connect()) as conn:
+        if db.get_book(conn, book_id) is None:
+            raise HTTPException(404, "no such book")
+        try:
+            b = db.set_edition_pages(conn, book_id, body.pages)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    return _book_out(b)
+
+
+@api.delete("/books/{book_id}", status_code=204)
+def delete_book(book_id: str) -> None:
+    """Remove a book from the library, with the derived state it owns.
+
+    Three stores hold something for a book and all three must go, or the
+    next ingest of the same title inherits it: the rows (chunks, the FTS
+    index, sessions and their transcripts), the embedding matrix, and the
+    downloaded source file.
+
+    The matrix is dropped first. A book row without a matrix is inert --
+    /books/{id} already 404s on exactly that condition -- whereas a matrix
+    without rows is a file the next same-id ingest would find and trust.
+    """
+    with closing(db.connect()) as conn:
+        if db.get_book(conn, book_id) is None:
+            raise HTTPException(404, "no such book")
+        vectors.delete(book_id)
+        db.delete_book(conn, book_id)
+
+    # uploads keep their source as RAW/{book_id}{suffix}; the suffix varies
+    # (.epub, .txt, .html) so match on the stem
+    for stored in RAW.glob(f"{book_id}.*"):
+        stored.unlink(missing_ok=True)
+
+
 @api.post("/books/resolve", response_model=list[CandidateOut])
 def resolve(body: ResolveIn) -> list[CandidateOut]:
     """Search permitted sources. Does not download -- that is /books/ingest."""
@@ -182,8 +243,14 @@ def resolve(body: ResolveIn) -> list[CandidateOut]:
         ]
 
 
-def _run_ingest(job_id: str, query: str) -> None:
-    """Background worker. Downloads, chunks and embeds -- minutes of work."""
+def _run_ingest(job_id: str, query: str,
+                edition_pages: int | None = None) -> None:
+    """Background worker. Downloads, chunks and embeds -- minutes of work.
+
+    `edition_pages` mirrors _run_upload_ingest: without it the body below
+    raises NameError, but only on the success path, so a five-minute embed
+    would complete and then report the job failed.
+    """
     with closing(db.connect()) as conn:
         db.update_job(conn, job_id, "running", "resolving source")
     try:
@@ -196,6 +263,8 @@ def _run_ingest(job_id: str, query: str) -> None:
             db.update_job(conn, job_id, "failed", f"{type(exc).__name__}: {exc}")
     else:
         with closing(db.connect()) as conn:
+            if edition_pages:
+                db.set_edition_pages(conn, book.id, edition_pages)
             db.update_job(conn, job_id, "done",
                           f"indexed {book.n_chunks} chunks", book.id)
 
@@ -220,7 +289,8 @@ def ingest(body: ResolveIn, background: BackgroundTasks) -> JobOut:
 
 
 def _run_upload_ingest(job_id: str, path: str, book_id: str,
-                       title: str, author: str) -> None:
+                       title: str, author: str,
+                       edition_pages: int | None = None) -> None:
     """Background worker for an uploaded file."""
     with closing(db.connect()) as conn:
         db.update_job(conn, job_id, "running", "parsing and indexing")
@@ -233,6 +303,8 @@ def _run_upload_ingest(job_id: str, path: str, book_id: str,
             db.update_job(conn, job_id, "failed", f"{type(exc).__name__}: {exc}")
     else:
         with closing(db.connect()) as conn:
+            if edition_pages:
+                db.set_edition_pages(conn, book.id, edition_pages)
             db.update_job(conn, job_id, "done",
                           f"indexed {book.n_chunks} chunks", book.id)
 
@@ -241,7 +313,8 @@ def _run_upload_ingest(job_id: str, path: str, book_id: str,
 async def upload_book(background: BackgroundTasks,
                       file: UploadFile = File(...),
                       title: str = Form(""),
-                      author: str = Form("")) -> JobOut:
+                      author: str = Form(""),
+                      pages: int | None = Form(None)) -> JobOut:
     """Index a book the reader already owns.
 
     Gutenberg only carries public-domain work, so anything still in copyright
@@ -264,7 +337,7 @@ async def upload_book(background: BackgroundTasks,
         job = db.create_job(conn, job_id, f"upload: {title}")
 
     background.add_task(_run_upload_ingest, job_id, str(path), book_id,
-                        title, author)
+                        title, author, pages if pages and pages > 0 else None)
     return JobOut(**job)
 
 
@@ -284,32 +357,42 @@ def create_session(body: SessionIn) -> SessionOut:
             raise HTTPException(404, "book not indexed")
         sid = f"s-{uuid.uuid4().hex[:12]}"
         s = db.create_session(conn, sid, body.book_id, body.position)
-    return SessionOut(**s, page=s["position"] // WORDS_PER_PAGE)
+        page = _page_of(conn, s["book_id"], s["position"])
+    return SessionOut(**s, page=page)
 
 
 @api.get("/sessions/{session_id}", response_model=SessionOut)
 def read_session(session_id: str) -> SessionOut:
     with closing(db.connect()) as conn:
         s = db.get_session(conn, session_id)
+        page = _page_of(conn, s["book_id"], s["position"]) if s else 0
     if s is None:
         raise HTTPException(404, "no such session")
-    return SessionOut(**s, page=s["position"] // WORDS_PER_PAGE)
+    return SessionOut(**s, page=page)
 
 
 @api.patch("/sessions/{session_id}/position", response_model=SessionOut)
 def update_position(session_id: str, body: PositionIn) -> SessionOut:
     if body.position is None and body.page is None:
         raise HTTPException(422, "supply either position (words) or page")
-    position = (body.position if body.position is not None
-                else body.page * WORDS_PER_PAGE)
     with closing(db.connect()) as conn:
+        existing = db.get_session(conn, session_id)
+        if existing is None:
+            raise HTTPException(404, "no such session")
+        if body.position is not None:
+            position = body.position
+        else:
+            book = db.get_book(conn, existing["book_id"])
+            wpp = book.words_per_page if book else WORDS_PER_PAGE
+            position = body.page * wpp
         try:
             s = db.set_position(conn, session_id, position)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        page = _page_of(conn, s["book_id"], s["position"]) if s else 0
     if s is None:
         raise HTTPException(404, "no such session")
-    return SessionOut(**s, page=s["position"] // WORDS_PER_PAGE)
+    return SessionOut(**s, page=page)
 
 
 @api.get("/sessions/{session_id}/history")
@@ -334,6 +417,13 @@ def chat(body: ChatIn) -> ChatOut:
     out = ask(body.session_id, session["book_id"], body.question,
               session["position"])
 
+    # Evidence is labelled in the same pages as the slider. Chunk.page uses the
+    # 250-word default because a chunk does not know which book it belongs to;
+    # here we do, so a declared edition relabels the citations too.
+    with closing(db.connect()) as conn:
+        b = db.get_book(conn, session["book_id"])
+    wpp = b.words_per_page if b else WORDS_PER_PAGE
+
     return ChatOut(
         answer=out["answer"],
         outcome=out["outcome"],
@@ -343,7 +433,8 @@ def chat(body: ChatIn) -> ChatOut:
         n_withheld=out.get("n_withheld", 0),
         evidence=[
             EvidenceOut(
-                chunk_id=e.chunk.id, chapter=e.chunk.chapter, page=e.chunk.page,
+                chunk_id=e.chunk.id, chapter=e.chunk.chapter,
+                page=e.chunk.word_start // wpp + 1,
                 word_start=e.chunk.word_start, word_end=e.chunk.word_end,
                 via=e.via, similarity=round(e.similarity, 4), text=e.chunk.text,
             )

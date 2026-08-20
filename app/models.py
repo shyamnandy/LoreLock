@@ -53,9 +53,27 @@ class Book:
     license: str
     total_words: int
     n_chunks: int
+    # The reader's own edition, when they told us: a printed book's page count
+    # bears no relation to total_words // 250, and the slider has to speak the
+    # number that is printed in the corner of the page in front of them.
+    edition_pages: int | None = None
+
+    @property
+    def words_per_page(self) -> int:
+        """Words the slider advances per page.
+
+        With an edition declared this is derived, so that page N of the
+        reader's edition maps to the same *fraction* of the text: page 30 of
+        100 lands at 30% of the words, whatever our own paging would call it.
+        """
+        if self.edition_pages:
+            return max(1, round(self.total_words / self.edition_pages))
+        return WORDS_PER_PAGE
 
     @property
     def total_pages(self) -> int:
+        if self.edition_pages:
+            return self.edition_pages
         return max(1, self.total_words // WORDS_PER_PAGE)
 
 

@@ -87,7 +87,13 @@ pip install -r requirements.txt
 
 python scripts/ingest.py "The Adventures of Sherlock Holmes"
 python scripts/demo.py                    # the four-beat demo
-streamlit run frontend/app.py
+```
+
+Then the UI — the API and the web client are separate processes:
+
+```bash
+.venv/Scripts/python.exe -m uvicorn app.api:api --port 8000
+cd web && npm install && npm run dev       # http://localhost:3000
 ```
 
 No API key is required to run the firewall, the tests, or the demo: the
@@ -114,7 +120,6 @@ python -m pytest -q
 |---|---|
 | `test_ingestion.py` | `idx` monotonic in both offsets; chapter continuity; the `word_end` bound |
 | `test_firewall.py` | prefix identity, per-position bounds, shingle leak sweep, FTS5 injection, **the mutation test** |
-| `test_memory.py` | memory facts rejected at write time when sourced past the reader |
 | `test_graph.py` | the three outcomes, prompt payload contains no future text, citations subset of evidence |
 
 The mutation test is the one worth reading. A firewall test that still
@@ -154,14 +159,13 @@ app/
   config.py            all tunables
   models.py            Chunk, Book, Evidence, FirewallBreach
   graph.py             LangGraph: 2 conditional branches, 1 cycle, typed state
-  memory.py            position-bounded reader memory, enforced on write
   ingestion/           sources (Gutendex) · parsers · cleaner · chunker · pipeline
   retrieval/           firewall (SafeRetriever) · hybrid (RRF) · oracle (Store B)
   store/               db (SQLite + FTS5) · vectors (NumPy prefix slice)
   agents/              llm (gemini|groq|ollama|stub) · analyzer · validator · prompts
-tests/                 27 tests, no network, no API key
+tests/                 35 tests, no network, no API key
 scripts/               ingest · make_novella · evaluate · demo
-frontend/app.py        Streamlit; the slider is the demo
+web/                   React (Vite) client; the position slider is the demo
 ```
 
 ---

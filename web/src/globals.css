@@ -1,0 +1,1526 @@
+/* BookMate visual system.
+   The ground is forest green, panels are cream and paper, and gold is the
+   only action colour -- so the one thing the app is actually about can own
+   the remaining hues: mint means "read / admitted", clay means
+   "unread / withheld". Those two are the subject, not decoration. */
+
+:root {
+  /* typefaces (self-hosted via @fontsource, imported in src/main.tsx) */
+  --font-ui: "Outfit Variable";
+  --font-serif: "Source Serif 4 Variable";
+  --font-mono: "JetBrains Mono Variable";
+
+  /* ground */
+  --forest-900: #05261b;
+  --forest-800: #0a3427;
+  --forest-700: #0e4433;
+  --hair: #1d5c45;
+
+  /* panels */
+  --cream: #f6e8d5;
+  --cream-2: #ecd9bf;
+  --paper: #ffffff;
+  --paper-rule: #f0ece4;
+
+  /* action */
+  --gold: #efc03b;
+  --gold-600: #dca91f;
+
+  /* semantics */
+  --mint: #8fdcb0;
+  --mint-700: #237954;
+  --mint-tint: #e4f5ec;
+  --mint-soft: #123e2d;
+
+  --clay: #e8977a;
+  --clay-700: #b4573a;
+  --clay-tint: #fbe9e1;
+  --clay-soft: #3b2118;
+
+  --amber-700: #8a6a12;
+  --amber-tint: #fbf0d6;
+
+  /* type colour */
+  --ink: #08281d;
+  --ink-2: #587266;
+  --on-dark: #eaf4ed;
+  --on-dark-2: #9cbcaa;
+
+  --r-xl: 30px;
+  --r-lg: 22px;
+  --r-md: 16px;
+  --r-sm: 11px;
+  --pill: 999px;
+
+  --lift: 0 18px 48px rgba(3, 22, 15, 0.32);
+  --lift-sm: 0 8px 22px rgba(3, 22, 15, 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background:
+    radial-gradient(120% 60% at 50% -10%, #0f4835 0%, transparent 60%),
+    var(--forest-800);
+  background-attachment: fixed;
+  color: var(--on-dark);
+  font-family: var(--font-ui), "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.mono,
+code {
+  font-family: var(--font-mono), ui-monospace, Menlo, Consolas, monospace;
+}
+
+:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.shell {
+  max-width: 82rem;
+  margin: 0 auto;
+  padding: 0.75rem 1.15rem 2.5rem;
+}
+
+/* nav --------------------------------------------------------------- */
+
+.nav {
+  position: sticky;
+  top: 0.9rem;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: var(--cream);
+  border-radius: var(--pill);
+  padding: 0.55rem 0.65rem 0.55rem 0.6rem;
+  box-shadow: var(--lift-sm);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  white-space: nowrap;
+}
+
+/* the mark sits on its own forest tile so it reads as a logo rather than as
+   one more icon in a cream bar */
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  border-radius: 12px;
+  background: var(--forest-800);
+  color: var(--cream);
+  box-shadow: 0 3px 10px rgba(3, 22, 15, 0.24);
+}
+
+.brand-word {
+  color: var(--ink);
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+
+/* "mate" recedes: the emphasis belongs on the book */
+.brand-word em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.nav-spacer {
+  flex: 1;
+}
+
+.nav-mid {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.picker {
+  appearance: none;
+  max-width: 22rem;
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--ink);
+  background-color: var(--cream-2);
+  border: 1px solid transparent;
+  border-radius: var(--pill);
+  padding: 0.5rem 2.1rem 0.5rem 1rem;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink) 50%),
+    linear-gradient(135deg, var(--ink) 50%, transparent 50%);
+  background-position:
+    calc(100% - 1.05rem) 55%,
+    calc(100% - 0.8rem) 55%;
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+}
+
+.picker:hover {
+  border-color: rgba(8, 40, 29, 0.2);
+}
+
+.tick {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--ink-2);
+  background: rgba(8, 40, 29, 0.06);
+  border-radius: var(--pill);
+  padding: 0.4rem 0.85rem;
+  white-space: nowrap;
+}
+
+/* buttons ----------------------------------------------------------- */
+
+button {
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  border-radius: var(--pill);
+  border: 1px solid transparent;
+  padding: 0.55rem 1.1rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.1s ease;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.btn-gold {
+  background: var(--gold);
+  color: var(--ink);
+}
+.btn-gold:hover:not(:disabled) {
+  background: var(--gold-600);
+}
+
+.btn-dark {
+  background: var(--forest-800);
+  color: var(--cream);
+}
+.btn-dark:hover:not(:disabled) {
+  background: var(--forest-700);
+}
+
+.btn-quiet {
+  background: transparent;
+  color: var(--ink);
+  border-color: rgba(8, 40, 29, 0.25);
+}
+.btn-quiet:hover:not(:disabled) {
+  background: rgba(8, 40, 29, 0.06);
+}
+
+.hero-cta .btn-quiet {
+  color: var(--on-dark);
+  border-color: var(--hair);
+}
+
+.hero-cta .btn-quiet:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--mint-700);
+}
+
+.btn-sm {
+  padding: 0.45rem 1rem;
+  font-size: 0.82rem;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+/* hero -------------------------------------------------------------- */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.75rem;
+  align-items: start;
+  padding: 1.75rem 0.35rem 1.5rem;
+}
+
+.hero > * {
+  min-width: 0;
+}
+
+.hero-solo {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 46rem;
+  padding: 2.25rem 0.35rem 1.5rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.76rem;
+  color: var(--mint);
+  background: rgba(143, 220, 176, 0.1);
+  border: 1px solid var(--hair);
+  border-radius: var(--pill);
+  padding: 0.28rem 0.8rem;
+}
+
+.badge i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mint);
+  display: block;
+}
+
+h1 {
+  font-size: clamp(1.8rem, 3.6vw, 2.5rem);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.08;
+  margin: 0.7rem 0 0;
+  text-wrap: balance;
+  overflow-wrap: break-word;
+}
+
+.lede {
+  font-size: 0.9rem;
+  color: var(--on-dark-2);
+  max-width: 36rem;
+  margin: 0.55rem 0 0;
+}
+
+.hero-cta {
+  display: flex;
+  gap: 0.7rem;
+  margin-top: 1.2rem;
+  flex-wrap: wrap;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--hair);
+  padding-top: 0.95rem;
+}
+
+.stat + .stat {
+  border-left: 1px solid var(--hair);
+  padding-left: 1.1rem;
+}
+
+.stat-n {
+  font-size: 1.45rem;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--mint);
+  line-height: 1.1;
+}
+
+.stat-l {
+  font-size: 0.72rem;
+  color: var(--on-dark-2);
+  margin-top: 0.15rem;
+}
+
+/* cards ------------------------------------------------------------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.col {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  min-width: 0;
+}
+
+/* A grid item's automatic minimum size is its min-content width, and a
+   book title set in nowrap has no min-content smaller than the whole title.
+   Without this a long title widened the card past its column rather than
+   ellipsing inside it. */
+.grid > *,
+.col > * {
+  min-width: 0;
+}
+
+.card {
+  border-radius: var(--r-md);
+  padding: 1rem 1.1rem;
+}
+
+.card-cream {
+  background: var(--cream);
+  color: var(--ink);
+}
+
+.card-dark {
+  background: var(--forest-700);
+  border: 1px solid var(--hair);
+  color: var(--on-dark);
+}
+
+.card-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  margin: 0 0 0.75rem;
+  color: var(--ink-2);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* the number beside a panel title -- how many rows are under it */
+.count {
+  font-size: 0.7rem;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  background: rgba(8, 40, 29, 0.08);
+  border-radius: var(--pill);
+  padding: 0.05rem 0.45rem;
+}
+
+.card-dark .count {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.card-dark .card-title {
+  color: var(--on-dark-2);
+}
+
+/* position control -------------------------------------------------- */
+
+.dial {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.dial-label {
+  font-size: 0.95rem;
+  color: var(--ink-2);
+}
+
+.dial-n {
+  font-size: 1.95rem;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.dial-n small {
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--ink-2);
+  letter-spacing: -0.01em;
+}
+
+/* the denominator doubles as the control that corrects it -- it must read
+   as text first and a button second, so it is bare until hover/focus */
+.total-btn {
+  background: none;
+  border: 0;
+  padding: 0 0 0 0.1rem;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.total-btn small {
+  border-bottom: 1px dashed rgba(8, 40, 29, 0.35);
+}
+
+.total-btn:hover small,
+.total-btn:focus-visible small {
+  color: var(--ink);
+  border-bottom-color: currentColor;
+}
+
+.total-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: 0.35rem;
+}
+
+.total-edit small {
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.total-edit input {
+  width: 5.5rem;
+  font-size: 1.05rem;
+  padding: 0.25rem 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.btn-sm {
+  font-size: 0.85rem;
+  padding: 0.3rem 0.7rem;
+}
+
+/* the one-time prompt: only while edition_pages is null */
+.nudge {
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: rgba(214, 168, 46, 0.12);
+  border-left: 3px solid rgba(214, 168, 46, 0.75);
+  border-radius: 0 6px 6px 0;
+}
+
+.nudge strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* the track *is* the book: the mint prefix is the slice the model may see */
+.track {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 12px;
+  margin: 1.1rem 0 0;
+  border-radius: var(--pill);
+  background: linear-gradient(
+    90deg,
+    var(--mint-700) 0 var(--pct, 40%),
+    rgba(8, 40, 29, 0.12) var(--pct, 40%) 100%
+  );
+  cursor: grab;
+}
+
+.track:active {
+  cursor: grabbing;
+}
+
+.track::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--gold);
+  border: 3px solid var(--cream);
+  box-shadow: 0 2px 8px rgba(8, 40, 29, 0.3);
+  cursor: inherit;
+}
+
+.track::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--gold);
+  border: 3px solid var(--cream);
+  box-shadow: 0 2px 8px rgba(8, 40, 29, 0.3);
+  cursor: inherit;
+}
+
+.track:disabled {
+  opacity: 0.5;
+}
+
+.sub {
+  font-size: 0.78rem;
+  color: var(--ink-2);
+  margin: 0.65rem 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-dark .sub {
+  color: var(--on-dark-2);
+}
+
+/* edition ----------------------------------------------------------- */
+
+/* A text button inside a sentence: it is a control, so it must be a
+   <button>, but it reads as part of the prose around it. */
+.link {
+  font: inherit;
+  color: var(--mint-700);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link:hover {
+  color: var(--ink);
+}
+
+.link:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.edition {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(8, 40, 29, 0.12);
+}
+
+.edition label {
+  display: block;
+  margin-bottom: 0.45rem;
+}
+
+.edition .row input {
+  max-width: 9rem;
+  flex: 0 1 9rem;
+}
+
+/* ask --------------------------------------------------------------- */
+
+.ask {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.ask input {
+  flex: 1;
+  min-width: 0;
+}
+
+input[type="text"],
+input[type="number"] {
+  width: 100%;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid rgba(8, 40, 29, 0.14);
+  border-radius: var(--pill);
+  padding: 0.55rem 0.95rem;
+}
+
+input[type="text"]::placeholder,
+input[type="number"]::placeholder {
+  color: #9aa89f;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus {
+  border-color: var(--mint-700);
+}
+
+input[type="text"]:disabled,
+input[type="number"]:disabled {
+  opacity: 0.55;
+}
+
+/* the spinner arrows crowd the pill and invite a click that changes the
+   reading position by one page at a time; the field is typed into */
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-2);
+  margin-bottom: 0.5rem;
+}
+
+/* thread ------------------------------------------------------------ */
+
+.thread {
+  background: var(--paper);
+  border-radius: var(--r-xl);
+  box-shadow: var(--lift);
+  overflow: hidden;
+  color: var(--ink);
+}
+
+.thread-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem 1.1rem;
+  border-bottom: 1px solid var(--paper-rule);
+}
+
+.thread-title {
+  font-size: 0.98rem;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+
+.thread-note {
+  font-size: 0.75rem;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.turn + .turn {
+  border-top: 6px solid #faf7f2;
+}
+
+.msg {
+  padding: 0.85rem 1.1rem;
+}
+
+.msg + .msg {
+  border-top: 1px solid var(--paper-rule);
+}
+
+.msg-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.avatar.you {
+  background: var(--cream-2);
+}
+
+.avatar.bot {
+  background: var(--mint-tint);
+  color: var(--mint-700);
+}
+
+.who {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.when {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.msg-body {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 0.95rem;
+  line-height: 1.58;
+  margin: 0.45rem 0 0;
+  color: #17342a;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border-radius: var(--pill);
+  padding: 0.22rem 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.tag.answered {
+  background: var(--mint-tint);
+  color: var(--mint-700);
+}
+.tag.refused_spoiler {
+  background: var(--clay-tint);
+  color: var(--clay-700);
+}
+.tag.refused_thin {
+  background: var(--amber-tint);
+  color: var(--amber-700);
+}
+
+.thread-empty {
+  padding: 1.7rem 1.5rem;
+  text-align: center;
+  color: var(--ink-2);
+  font-size: 0.95rem;
+  max-width: 30rem;
+  margin: 0 auto;
+}
+
+/* firewall ---------------------------------------------------------- */
+
+.meters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.7rem;
+}
+
+.meter {
+  border-radius: var(--r-sm);
+  padding: 0.55rem 0.7rem;
+  border: 1px solid transparent;
+}
+
+.meter.ok {
+  background: var(--mint-soft);
+  border-color: rgba(143, 220, 176, 0.28);
+}
+.meter.no {
+  background: var(--clay-soft);
+  border-color: rgba(232, 151, 122, 0.28);
+}
+
+.meter-n {
+  font-size: 1.3rem;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.meter.ok .meter-n {
+  color: var(--mint);
+}
+.meter.no .meter-n {
+  color: var(--clay);
+}
+
+.meter-l {
+  font-size: 0.63rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--on-dark-2);
+  margin-top: 0.2rem;
+}
+
+.bar {
+  display: flex;
+  height: 8px;
+  border-radius: var(--pill);
+  overflow: hidden;
+  margin-top: 0.7rem;
+  background: var(--forest-900);
+}
+
+.bar-ok {
+  background: var(--mint);
+}
+.bar-no {
+  background: var(--clay);
+  opacity: 0.4;
+}
+
+/* evidence ---------------------------------------------------------- */
+
+/* A turn admits a dozen passages or so. Unrolled they push the library and
+   everything under them off the screen, so the list keeps its own scroll. */
+.ev-list {
+  max-height: 19rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 -0.3rem;
+  padding: 0 0.3rem;
+}
+
+.ev {
+  border-top: 1px solid rgba(8, 40, 29, 0.12);
+}
+
+.ev summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.45rem 0;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.76rem;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.ev summary::-webkit-details-marker {
+  display: none;
+}
+
+.ev summary:hover,
+.ev[open] summary {
+  color: var(--ink);
+}
+
+.via {
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-radius: var(--pill);
+  padding: 0.2rem 0.55rem;
+  background: rgba(8, 40, 29, 0.07);
+}
+
+/* how the passage got in: a semantic hit, a lexical hit, or context widened
+   in around one. Neighbours stay quiet -- they were not matched. */
+.via.both,
+.via.vector {
+  background: var(--mint-tint);
+  color: var(--mint-700);
+}
+
+.via.keyword {
+  background: var(--amber-tint);
+  color: var(--amber-700);
+}
+
+.via.neighbour {
+  background: transparent;
+  color: var(--ink-2);
+  box-shadow: inset 0 0 0 1px rgba(8, 40, 29, 0.18);
+}
+
+.ev-text {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  margin: 0.15rem 0 0.5rem;
+  color: var(--ink);
+}
+
+.cite {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.68rem;
+  color: var(--ink-2);
+  margin: 0 0 0.6rem;
+  word-break: break-all;
+}
+
+/* library ----------------------------------------------------------- */
+
+/* The library is a drawer. Its whole header is the handle, so the hit target
+   is the width of the card rather than a chevron in the corner. */
+.panel {
+  padding-top: 0.35rem;
+}
+
+/* the trash / Add control keeps its size; the title is what gives way */
+.cand > button,
+.shelf-row > .icon-btn {
+  flex: none;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  padding: 0.65rem 0;
+  margin: 0;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+
+.panel-head .card-title {
+  margin: 0;
+}
+
+.panel-head:hover .card-title {
+  color: var(--ink);
+}
+
+.panel-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.panel-body {
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(8, 40, 29, 0.12);
+}
+
+/* a chevron drawn from a rotated corner, so it inherits the text colour */
+.chev {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.chev.up {
+  transform: translateY(1px) rotate(-135deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chev {
+    transition: none;
+  }
+}
+
+.row {
+  display: flex;
+  gap: 0.55rem;
+}
+
+.row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.block {
+  margin-top: 0.9rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(8, 40, 29, 0.12);
+}
+
+input[type="file"] {
+  width: 100%;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.74rem;
+  color: var(--ink-2);
+  padding: 0.3rem 0 0.5rem;
+}
+
+input[type="file"]::file-selector-button {
+  font-family: var(--font-ui), sans-serif;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--cream-2);
+  border: 1px solid transparent;
+  border-radius: var(--pill);
+  padding: 0.45rem 0.95rem;
+  margin-right: 0.7rem;
+  cursor: pointer;
+}
+
+input[type="file"]::file-selector-button:hover {
+  background: var(--gold);
+}
+
+/* icon buttons ------------------------------------------------------ */
+
+/* Square, quiet by default. Destructive intent is carried by the hover
+   state rather than by a permanently red control -- delete sits next to
+   the book you are reading, and a red button there reads as an alarm. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  color: var(--ink-2);
+  background: transparent;
+  border-color: rgba(8, 40, 29, 0.18);
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: rgba(8, 40, 29, 0.06);
+  color: var(--ink);
+}
+
+.icon-btn-danger:hover:not(:disabled) {
+  color: var(--clay-700);
+  background: var(--clay-tint);
+  border-color: rgba(180, 87, 58, 0.35);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid var(--clay-700);
+  outline-offset: 2px;
+}
+
+/* the shelf: every indexed book, one row each ------------------------ */
+
+.shelf {
+  margin-bottom: 1rem;
+  border-top: 1px solid rgba(8, 40, 29, 0.1);
+}
+
+.shelf-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid rgba(8, 40, 29, 0.1);
+}
+
+/* the title is the control that opens the book, so it is a button --
+   stripped of the pill styling the rest of them carry */
+.shelf-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  background: transparent;
+  border-radius: var(--r-sm);
+  border-color: transparent;
+  color: inherit;
+}
+
+.shelf-pick:hover {
+  background: rgba(8, 40, 29, 0.06);
+}
+
+.shelf-pick > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the open book gets the gold rule the rest of the app uses for "current" */
+.shelf-row.is-open .shelf-pick {
+  box-shadow: inset 2px 0 0 var(--gold);
+}
+
+.shelf-row.is-open .cand-title {
+  font-weight: 600;
+}
+
+/* shown in place of the trash icon while the delete is in flight */
+.spin {
+  display: block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid rgba(8, 40, 29, 0.2);
+  border-top-color: var(--ink-2);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation-duration: 2.4s;
+  }
+}
+
+.cand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9rem;
+  min-width: 0;
+  padding: 0.8rem 0;
+  border-bottom: 1px solid rgba(8, 40, 29, 0.1);
+}
+
+.cand > div {
+  min-width: 0;
+}
+
+.cand-title {
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.cand-author {
+  font-size: 0.75rem;
+  color: var(--ink-2);
+  margin-top: 0.1rem;
+}
+
+.job {
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: var(--r-sm);
+  background: rgba(8, 40, 29, 0.06);
+  border: 1px solid transparent;
+}
+
+.job.queued,
+.job.running {
+  background: var(--amber-tint);
+  border-color: rgba(239, 192, 59, 0.55);
+}
+.job.done {
+  background: var(--mint-tint);
+  border-color: rgba(35, 121, 84, 0.35);
+}
+.job.failed {
+  background: var(--clay-tint);
+  border-color: rgba(180, 87, 58, 0.35);
+}
+
+.job strong {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.job p {
+  font-size: 0.82rem;
+  color: var(--ink-2);
+  margin: 0.35rem 0 0;
+}
+
+/* ingestion has no honest percentage: it is a download, then a chunker,
+   then an embedding loop. So the bar reports motion, not progress. */
+.indeterminate {
+  height: 3px;
+  margin-top: 0.75rem;
+  border-radius: var(--pill);
+  background: rgba(8, 40, 29, 0.12);
+  overflow: hidden;
+  position: relative;
+}
+
+.indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 38%;
+  border-radius: var(--pill);
+  background: var(--gold-600);
+  animation: slide 1.4s ease-in-out infinite;
+}
+
+@keyframes slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .indeterminate::after {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+  button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* onboarding steps -------------------------------------------------- */
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 0 0 1.4rem;
+}
+
+.step {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-md);
+  padding: 0.9rem 1rem;
+}
+
+.step b {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--gold);
+  margin-bottom: 0.5rem;
+}
+
+.step p {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--on-dark-2);
+}
+
+/* the add-a-book dialog --------------------------------------------- */
+
+/* Adding a book is an errand with two forms and a list of results in it.
+   On the page it was a third column; over the page it is a task you finish
+   and dismiss, and the shelf underneath goes back to being a shelf. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: start center;
+  padding: 1.5rem 1rem 3rem;
+  overflow-y: auto;
+  background: rgba(3, 18, 12, 0.62);
+  backdrop-filter: blur(3px);
+  animation: fade 0.14s ease-out;
+}
+
+.modal {
+  width: min(34rem, 100%);
+  background: var(--cream);
+  color: var(--ink);
+  border-radius: var(--r-lg);
+  box-shadow: var(--lift);
+  padding: 1rem 1.15rem 1.15rem;
+  animation: rise 0.16s ease-out;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.modal-title {
+  font-size: 1.15rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.modal-body {
+  margin-top: 0.9rem;
+}
+
+.modal-body .error {
+  background: var(--clay-tint);
+  border-color: rgba(180, 87, 58, 0.3);
+  color: var(--clay-700);
+  margin-bottom: 0.9rem;
+}
+
+/* the results list is the part that grows; it scrolls rather than pushing
+   the dialog past the bottom of the window */
+.results {
+  margin-top: 0.8rem;
+  max-height: 17rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backdrop,
+  .modal {
+    animation: none;
+  }
+}
+
+/* tabs -------------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.9rem;
+  padding: 0.25rem;
+  background: rgba(8, 40, 29, 0.07);
+  border-radius: var(--pill);
+}
+
+.tab {
+  flex: 1;
+  font: inherit;
+  font-size: 0.83rem;
+  font-weight: 500;
+  color: var(--ink-2);
+  background: none;
+  border: 0;
+  border-radius: var(--pill);
+  padding: 0.42rem 0.8rem;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab.on {
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(3, 22, 15, 0.12);
+}
+
+/* misc -------------------------------------------------------------- */
+
+.hint {
+  color: var(--ink-2);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.error {
+  background: var(--clay-soft);
+  border: 1px solid rgba(232, 151, 122, 0.4);
+  color: #f3c3ae;
+  overflow-wrap: anywhere;
+  border-radius: var(--r-md);
+  padding: 0.7rem 1rem;
+  font-size: 0.88rem;
+  margin: 0 0 1rem;
+}
+
+.footnote {
+  color: var(--on-dark-2);
+  font-size: 0.76rem;
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--hair);
+  max-width: 52rem;
+}
+
+.footnote code {
+  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  color: var(--mint);
+}
+
+/* responsive -------------------------------------------------------- */
+
+@media (max-width: 70rem) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.25rem;
+    padding-top: 1.5rem;
+  }
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 52rem) {
+  .nav {
+    flex-wrap: wrap;
+    border-radius: var(--r-lg);
+    padding: 0.75rem 0.8rem;
+  }
+  .nav-spacer {
+    display: none;
+  }
+  .nav-mid {
+    order: 3;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .brand {
+    margin-right: auto;
+  }
+  .picker {
+    max-width: 100%;
+    flex: 1;
+  }
+  .steps,
+  .stats,
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .stat + .stat {
+    border-left: 0;
+    border-top: 1px solid var(--hair);
+    padding: 1rem 0 0;
+    margin-top: 1rem;
+  }
+  .ask {
+    flex-wrap: wrap;
+  }
+  .ask button {
+    width: 100%;
+  }
+}

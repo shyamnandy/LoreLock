@@ -1,4 +1,4 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
 
 export type Book = {
   id: string;
@@ -9,6 +9,9 @@ export type Book = {
   n_chunks: number;
   license: string;
   words_per_page: number;
+  // null until the reader declares their own edition; when set, total_pages
+  // is their count and words_per_page is derived from it.
+  edition_pages: number | null;
 };
 
 export type Session = {
@@ -24,7 +27,9 @@ export type Evidence = {
   page: number;
   word_start: number;
   word_end: number;
-  via: "vector" | "keyword" | "both";
+  // "neighbour" is a chunk widened in around a hit rather than matched itself
+  // (firewall._with_neighbours), so it reads as context, not evidence.
+  via: "vector" | "keyword" | "both" | "neighbour";
   similarity: number;
   text: string;
 };
@@ -72,6 +77,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(detail);
   }
+  // 204 has no body at all, and res.json() would throw on the empty string
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -102,11 +109,17 @@ export const api = {
 
   // a book the reader already owns. Gutenberg carries only public-domain
   // work, so anything still in copyright can only arrive this way.
-  upload: async (file: File, title: string, author: string) => {
+  upload: async (
+    file: File,
+    title: string,
+    author: string,
+    pages?: number | null,
+  ) => {
     const form = new FormData();
     form.append("file", file);
     form.append("title", title);
     form.append("author", author);
+    if (pages) form.append("pages", String(pages));
     const res = await fetch(BASE + "/books/upload", {
       method: "POST",
       body: form, // no Content-Type: the browser sets the multipart boundary
@@ -122,6 +135,18 @@ export const api = {
     }
     return (await res.json()) as Job;
   },
+
+  // the reader's own edition. null returns the book to our derived paging.
+  setEdition: (book_id: string, pages: number | null) =>
+    req<Book>(`/books/${book_id}/edition`, {
+      method: "PATCH",
+      body: JSON.stringify({ pages }),
+    }),
+
+  // removes the chunks, the FTS rows, the embedding matrix, the stored
+  // source file and any session transcripts. There is no undo.
+  deleteBook: (book_id: string) =>
+    req<void>(`/books/${book_id}`, { method: "DELETE" }),
 
   createSession: (book_id: string, position = 0) =>
     req<Session>("/sessions", {
