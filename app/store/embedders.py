@@ -80,14 +80,25 @@ def _local(texts: list[str], input_type: str, progress: bool) -> np.ndarray:
 
 # -- voyage (MongoDB's embedding API) -------------------------------------
 
-_VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
+# Voyage is reachable two ways and the keys are NOT interchangeable: a
+# native key from voyageai.com works against api.voyageai.com, while a key
+# minted in the Atlas console only works against MongoDB's own endpoint.
+# Using the wrong pair returns a 403 saying exactly that. Overridable so
+# either route works without a code change.
+_VOYAGE_URL = os.environ.get("VOYAGE_URL",
+                             "https://api.voyageai.com/v1/embeddings")
 
-# Voyage caps a request by token count, not just item count. At ~237 words
-# per chunk (~320 tokens) a 128-item batch is ~40k tokens, comfortably inside
-# the limit for the lite models while keeping the number of round trips low.
-_VOYAGE_BATCH = int(os.environ.get("VOYAGE_BATCH", "128"))
+# Sized against the TOKEN limit, not the item limit. A free-tier project is
+# 10k tokens/min and 3 requests/min; at ~315 tokens per chunk a 24-item batch
+# is ~7.5k tokens, so one request fits inside the per-minute budget with room
+# to spare. Raising this past ~32 makes every request exceed the whole budget
+# and 429 forever -- raise the project's limit first, then this.
+_VOYAGE_BATCH = int(os.environ.get("VOYAGE_BATCH", "24"))
 _VOYAGE_TIMEOUT = float(os.environ.get("VOYAGE_TIMEOUT", "60"))
-_VOYAGE_RETRIES = int(os.environ.get("VOYAGE_RETRIES", "2"))
+# Rate limits are the expected case here, not an anomaly: a full book is many
+# minutes of budget, so a 429 has to be waited out rather than given up on.
+_VOYAGE_RETRIES = int(os.environ.get("VOYAGE_RETRIES", "6"))
+_VOYAGE_BACKOFF = float(os.environ.get("VOYAGE_BACKOFF", "20"))
 
 
 def _voyage_post(batch: list[str], input_type: str) -> list[list[float]]:
@@ -130,6 +141,15 @@ def _voyage_post(batch: list[str], input_type: str) -> list[list[float]]:
                             for row in sorted(data, key=lambda r: r["index"])]
             elif resp.status_code == 429 or resp.status_code >= 500:
                 last = EmbedError(f"voyage {resp.status_code}: {resp.text[:200]}")
+                # The server knows how long it wants; prefer its answer to
+                # our guess. Absent the header, wait a whole rate-limit
+                # window rather than the few seconds a 5xx would want.
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get("Retry-After")
+                    wait = float(retry_after) if (retry_after or "").replace(".", "", 1).isdigit() else _VOYAGE_BACKOFF
+                    if attempt < _VOYAGE_RETRIES:
+                        time.sleep(wait)
+                        continue
             else:
                 # Anything else is a real answer about the request itself --
                 # a bad key, an unknown model, a malformed body. It will be
