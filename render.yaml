@@ -21,6 +21,13 @@ services:
         value: /data
       - key: LLM_PROVIDER
         value: groq
+      # The free tier is 512 MB and indexing is what gets closest to it.
+      # Explicit here rather than left to the code default so the limit is
+      # visible next to the plan that imposes it. See .env.example.
+      - key: EMBED_BATCH
+        value: "8"
+      - key: EMBED_THREADS
+        value: "2"
       # --- secrets: set in the Render dashboard, never in git -------------
       - key: MONGODB_URI
         sync: false          # mongodb+srv://... from Atlas
