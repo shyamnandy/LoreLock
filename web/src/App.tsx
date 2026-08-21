@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Landing, { type BootStatus } from "@/Landing";
 import {
   api,
   ApiError,
@@ -211,6 +212,18 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   // true only while a sleeping backend is being woken; see api.wake
   const [waking, setWaking] = useState(false);
+  // true until the first handshake settles, one way or the other
+  const [booting, setBooting] = useState(true);
+  // bumping this re-runs the boot effect: the "try again" on the landing page
+  const [bootNonce, setBootNonce] = useState(0);
+  // the handshake failed, as opposed to any later request that happened to
+  // fail -- only this one is allowed to say the server is unreachable
+  const [bootFailed, setBootFailed] = useState(false);
+  /* The gate. Opening a book no longer opens the app -- asking to does.
+     A cold free-tier backend takes up to a minute to answer, and the reader
+     should spend that minute on a page that explains itself rather than on a
+     reading UI with nothing in it yet. */
+  const [entered, setEntered] = useState(false);
   // the book id currently being deleted, so its row alone shows the wait
   const [deleting, setDeleting] = useState<string | null>(null);
 
@@ -285,6 +298,9 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    setBooting(true);
+    setBootFailed(false);
+    setError(null);
     (async () => {
       try {
         // The API may be a sleeping free-tier container. Wait it out rather
@@ -293,32 +309,34 @@ export default function App() {
         if (cancelled) return;
         const list = await loadLibrary();
         if (cancelled) return;
+        // The book is chosen, but not opened: `entered` decides that, so the
+        // reader stays on the landing page until they ask to leave it.
         if (list.length) setBook(list[0]);
       } catch (e) {
         if (cancelled) return;
+        setBootFailed(true);
         setError(
           `Cannot reach the API at ${
             import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000"
           }. Start the backend, or set VITE_API_URL. (${(e as Error).message})`,
         );
       } finally {
-        if (!cancelled) setWaking(false);
+        if (!cancelled) {
+          setWaking(false);
+          setBooting(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [loadLibrary]);
+  }, [loadLibrary, bootNonce]);
 
   // A new *book* means a new session; clear the transcript with it. Keyed on
   // the id, not the object: re-declaring the edition replaces the object
   // in place, and that must not throw away the conversation.
   useEffect(() => {
-    if (!book) {
-      setLibOpen(true);
-      return;
-    }
-    setLibOpen(false);
+    if (!book) return;
     setTurns([]);
     const start = Math.min(40, book.total_pages);
     setPage(start);
@@ -328,6 +346,13 @@ export default function App() {
       .catch((e) => setError((e as Error).message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book?.id]);
+
+  /* The shelf is a drawer in the app -- shut, so the thread and the firewall
+     own the screen -- and a list on the landing page, where picking from it
+     is one of the two things there is to do. */
+  useEffect(() => {
+    setLibOpen(!entered);
+  }, [entered]);
 
   // poll an in-flight ingest
   useEffect(() => {
@@ -343,7 +368,9 @@ export default function App() {
             setBook(added);
             setCandidates(null);
             setSearch("");
-            // the errand is done; the reader is now looking at the book
+            // the errand is done; the reader is now looking at the book --
+            // adding one is itself a request to read it, so this opens the app
+            setEntered(true);
             setModal(null);
           }
         }
@@ -487,6 +514,8 @@ export default function App() {
         setBook((cur) =>
           cur && cur.id === target.id ? (list[0] ?? null) : cur,
         );
+        // deleting the last book leaves nothing to be inside the app for
+        if (!list.length) setEntered(false);
       } catch (e) {
         setError(`Could not remove ${target.title}: ${(e as Error).message}`);
       } finally {
@@ -498,6 +527,18 @@ export default function App() {
 
   const ingesting =
     job && (job.status === "queued" || job.status === "running");
+
+  /* What the landing page says about the backend. `waking` alone is not
+     enough: before the first request fails there is nothing to report yet,
+     and after the retries run out the truthful word is "offline", not
+     "waking". */
+  const bootStatus: BootStatus = bootFailed
+    ? "offline"
+    : waking
+      ? "waking"
+      : booting
+        ? "connecting"
+        : "ready";
 
   const closeModal = useCallback(() => {
     setModal(null);
@@ -521,6 +562,23 @@ export default function App() {
     },
     [],
   );
+
+  /* Leaving the landing page. With books on the shelf this is a plain
+     navigation; with an empty shelf there is nothing to open yet, so the
+     same button becomes the errand that fills it. */
+  const enterApp = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      if (books.length) setEntered(true);
+      else openModal("search", e);
+    },
+    [books.length, openModal],
+  );
+
+  // picking a book anywhere is a request to read it
+  const openBook = useCallback((b: Book) => {
+    setBook(b);
+    setEntered(true);
+  }, []);
 
   const saveApiKey = useCallback(async () => {
     const key = keyInput.trim();
@@ -629,7 +687,7 @@ export default function App() {
             >
               <button
                 className="shelf-pick"
-                onClick={() => setBook(b)}
+                onClick={() => openBook(b)}
                 /* the row ellipses, so the tooltip carries the whole title
                    whether or not this is the book already open */
                 title={`${b.title} — ${b.author}${
@@ -987,25 +1045,45 @@ export default function App() {
   return (
     <div className="shell">
       <nav className="nav">
-        <span className="brand">
-          <span className="brand-mark">
-            <Mark size={21} />
+        {/* Once the app is open the mark is the way back out to the
+            landing page; on the landing page itself it is only a logo. */}
+        {entered ? (
+          <button
+            type="button"
+            className="brand brand-home"
+            onClick={() => setEntered(false)}
+            title="Back to the start"
+          >
+            <span className="brand-mark">
+              <Mark size={21} />
+            </span>
+            <span className="brand-word">
+              book<em>mate</em>
+            </span>
+          </button>
+        ) : (
+          <span className="brand">
+            <span className="brand-mark">
+              <Mark size={21} />
+            </span>
+            <span className="brand-word">
+              book<em>mate</em>
+            </span>
           </span>
-          <span className="brand-word">
-            book<em>mate</em>
-          </span>
-        </span>
+        )}
 
         <span className="nav-spacer" />
 
         <div className="nav-mid">
-          {books.length > 0 && (
+          {/* the picker switches books; on the landing page there is no open
+              book to switch away from, so it stays out of the way */}
+          {entered && books.length > 0 && (
             <select
               className="picker"
               aria-label="Book you are reading"
               value={book?.id ?? ""}
               onChange={(e) =>
-                setBook(books.find((b) => b.id === e.target.value) ?? null)
+                openBook(books.find((b) => b.id === e.target.value) ?? books[0])
               }
             >
               {books.map((b) => (
@@ -1041,12 +1119,17 @@ export default function App() {
         )}
 
         {/* both routes in are tabs of the dialog this opens */}
-        <button className="btn-gold" onClick={(e) => openModal("search", e)}>
+        <button
+          className="btn-gold"
+          onClick={(e) => openModal("search", e)}
+          disabled={booting}
+          title={booting ? "Waiting for the server" : undefined}
+        >
           Add a book
         </button>
       </nav>
 
-      {book ? (
+      {entered && book ? (
         <>
           <header className="hero">
             <div>
@@ -1350,85 +1433,28 @@ export default function App() {
           </div>
         </>
       ) : (
-        <>
-          <header className="hero hero-solo">
-            <div>
-              <span className="badge">
-                <i />
-                {books.length
-                  ? `${books.length} indexed`
-                  : "Nothing indexed yet"}
-              </span>
-              <h1>Ask your book anything. Spoil nothing.</h1>
-              <p className="lede">
-                Tell BookMate how far you&rsquo;ve read. It answers from the
-                pages behind you and nothing else — because the pages ahead are
-                not in the array it searches.
-              </p>
-              <div className="hero-cta">
-                <button
-                  className="btn-gold"
-                  onClick={(e) => openModal("search", e)}
-                >
-                  Add your first book
-                </button>
-                <button
-                  className="btn-quiet"
-                  onClick={(e) => openModal("upload", e)}
-                >
-                  Upload one you own
-                </button>
-              </div>
-            </div>
-          </header>
-
-          {waking && (
-            <div className="waking" role="status">
-              <span className="waking-dot" aria-hidden="true" />
-              Waking the server. The free tier sleeps when idle, so the first
-              load can take up to a minute.
-            </div>
-          )}
-          {error && !modal && <div className="error">{error}</div>}
-
-          <div className="steps">
-            <div className="step">
-              <b>01</b>
-              <p>
-                Search Project Gutenberg, or upload the DRM-free copy you
-                already own.
-              </p>
-            </div>
-            <div className="step">
-              <b>02</b>
-              <p>
-                Drag the slider to the page you&rsquo;re on. That number is the
-                whole boundary.
-              </p>
-            </div>
-            <div className="step">
-              <b>03</b>
-              <p>
-                Ask. Every passage the model saw is listed, with the page it
-                came from.
-              </p>
-            </div>
-          </div>
-
-          {books.length > 0 && (
-            <div style={{ maxWidth: "38rem" }}>{libraryPanel}</div>
-          )}
-        </>
+        <Landing
+          status={bootStatus}
+          count={books.length}
+          error={error}
+          provider={provider}
+          onEnter={enterApp}
+          onUpload={(e) => openModal("upload", e)}
+          onRetry={() => setBootNonce((n) => n + 1)}
+          library={libraryPanel}
+        />
       )}
 
-      <p className="footnote">
-        The spoiler boundary is not a prompt instruction. Chunks are stored in
-        narrative order, so the eligible set is a contiguous prefix of an array
-        and the searched matrix is the slice <code>E[:n_p]</code> — future
-        passages are absent from the operand, not filtered out of it.
-        {provider ? ` Answer model: ${provider}.` : ""}
-        {keyState?.source === "override" ? " Running on your API key." : ""}
-      </p>
+      {entered && book && (
+        <p className="footnote">
+          The spoiler boundary is not a prompt instruction. Chunks are stored in
+          narrative order, so the eligible set is a contiguous prefix of an
+          array and the searched matrix is the slice <code>E[:n_p]</code> —
+          future passages are absent from the operand, not filtered out of it.
+          {provider ? ` Answer model: ${provider}.` : ""}
+          {keyState?.source === "override" ? " Running on your API key." : ""}
+        </p>
+      )}
 
       {addDialog}
       {keyDialog}

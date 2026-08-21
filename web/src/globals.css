@@ -281,10 +281,163 @@ button:disabled {
   min-width: 0;
 }
 
-.hero-solo {
-  grid-template-columns: minmax(0, 1fr);
-  max-width: 46rem;
-  padding: 2.25rem 0.35rem 1.5rem;
+/* The landing hero is a pitch on the left and a working toy on the right.
+   The copy column takes the wider share: the demo is a diagram you can grab,
+   not a screenshot, and it reads fine at 24rem. */
+.hero-landing {
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 2.5rem;
+  padding: 3rem 0.35rem 2rem;
+  align-items: center;
+  position: relative;
+}
+
+/* a soft pool of light behind the copy -- the page is very dark otherwise,
+   and the hero should feel like the lit part of it */
+.hero-landing::before {
+  content: "";
+  position: absolute;
+  inset: -6rem -10rem auto -14rem;
+  height: 34rem;
+  background: radial-gradient(
+    58% 55% at 22% 38%,
+    rgba(143, 220, 176, 0.13) 0%,
+    rgba(143, 220, 176, 0) 70%
+  );
+  pointer-events: none;
+  z-index: -1;
+}
+
+.hero-copy {
+  position: relative;
+}
+
+.hero-landing h1 {
+  font-size: clamp(2.1rem, 4.4vw, 3.15rem);
+}
+
+/* the promise, underlined in the action colour -- a drawn line rather than
+   text-decoration so it sits low and thick enough to read as a mark */
+.hero-landing h1 em {
+  font-style: normal;
+  color: var(--gold);
+  background-image: linear-gradient(
+    90deg,
+    rgba(239, 192, 59, 0.55),
+    rgba(239, 192, 59, 0.12)
+  );
+  background-repeat: no-repeat;
+  background-size: 100% 0.18em;
+  background-position: 0 88%;
+}
+
+.hero-landing .lede {
+  font-size: 1rem;
+  max-width: 32rem;
+}
+
+/* the boot caption: small, because a sleeping container is ordinary */
+.hero-note {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--on-dark-2);
+  max-width: 30rem;
+  margin: 0.85rem 0 0;
+  min-height: 2.4em;
+}
+
+.hero-note b {
+  color: var(--on-dark);
+  font-weight: 600;
+}
+
+.hero-note.is-wait {
+  color: var(--gold);
+  opacity: 0.9;
+}
+
+.hero-note .waking-dot {
+  position: relative;
+  top: -0.1em;
+  background: var(--gold);
+}
+
+.hero-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 1.35rem;
+  list-style: none;
+  margin: 1.5rem 0 0;
+  padding: 1.1rem 0 0;
+  border-top: 1px solid var(--hair);
+  font-size: 0.78rem;
+  color: var(--on-dark-2);
+}
+
+.hero-facts li {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.hero-facts li::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--mint);
+  flex: none;
+}
+
+/* the badge changes colour with the backend it is reporting on */
+.badge-wait {
+  color: var(--gold);
+  background: rgba(239, 192, 59, 0.1);
+  border-color: rgba(239, 192, 59, 0.3);
+}
+
+.badge-wait i {
+  background: var(--gold);
+  animation: waking-pulse 1.4s ease-in-out infinite;
+}
+
+.badge-down {
+  color: var(--clay);
+  background: rgba(232, 151, 122, 0.1);
+  border-color: rgba(232, 151, 122, 0.32);
+}
+
+.badge-down i {
+  background: var(--clay);
+}
+
+/* the mark, when it is also the way back to the landing page */
+.brand-home {
+  background: none;
+  border: 0;
+  padding: 0;
+  border-radius: var(--pill);
+}
+
+.brand-home:active:not(:disabled) {
+  transform: none;
+}
+
+.brand-home:hover .brand-word {
+  color: var(--mint-700);
+}
+
+/* the spinner, sitting inside a gold button beside its label. Both classes,
+   because the base .spin is a block and is declared later in this file. */
+.spin.spin-ink {
+  display: inline-block;
+  vertical-align: -0.15em;
+  margin-right: 0.5rem;
+  border-color: rgba(8, 40, 29, 0.25);
+  border-top-color: var(--ink);
 }
 
 .badge {
@@ -1311,20 +1464,90 @@ input[type="file"]::file-selector-button:hover {
   }
 }
 
-/* onboarding steps -------------------------------------------------- */
+/* how it works ------------------------------------------------------- */
+
+.how {
+  margin: 2.5rem 0 1.6rem;
+}
+
+.how-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--on-dark-2);
+  margin: 0 0 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+/* the rule runs off to the right of the label, so the section reads as a
+   band across the page and not three boxes that happen to be adjacent */
+.how-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--hair);
+}
 
 .steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
-  margin: 0 0 1.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .step {
-  background: rgba(255, 255, 255, 0.04);
+  position: relative;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06),
+    rgba(255, 255, 255, 0.02)
+  );
   border: 1px solid var(--hair);
   border-radius: var(--r-md);
-  padding: 0.9rem 1rem;
+  padding: 1.15rem 1.15rem 1.25rem;
+  overflow: hidden;
+  transition:
+    border-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+/* a gold hairline drawn along the top edge on hover: these cards are not
+   clickable, so the feedback is a highlight rather than a lift */
+.step::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: linear-gradient(90deg, var(--gold), transparent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.35s ease;
+}
+
+.step:hover {
+  border-color: var(--mint-700);
+  transform: translateY(-2px);
+}
+
+.step:hover::before {
+  transform: scaleX(1);
+}
+
+.step-i {
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 10px;
+  background: rgba(143, 220, 176, 0.12);
+  border: 1px solid var(--hair);
+  color: var(--mint);
+  margin-bottom: 0.8rem;
 }
 
 .step b {
@@ -1332,14 +1555,230 @@ input[type="file"]::file-selector-button:hover {
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--gold);
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.45rem;
 }
 
 .step p {
   margin: 0;
   font-size: 0.86rem;
   color: var(--on-dark-2);
+}
+
+.landing-shelf {
+  max-width: 38rem;
+  margin-bottom: 1.4rem;
+}
+
+/* the demo ------------------------------------------------------------
+
+   The one thing on this page that moves, and the only honest way to explain
+   the product to someone who has indexed nothing yet: drag a boundary and
+   watch the searchable set change under it. It runs entirely locally, which
+   is deliberate -- it is the part of the landing page that still works while
+   the backend is asleep. */
+
+.demo {
+  padding: 1.15rem 1.25rem 1.25rem;
+  box-shadow: var(--lift);
+  /* a hair off square: a specimen on the page, not a panel of it */
+  transform: rotate(-0.35deg);
+}
+
+.demo-book {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
+.demo-book strong {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.demo-book span {
+  font-size: 0.76rem;
+  color: var(--ink-2);
+}
+
+/* every passage in the book, in narrative order. The filled prefix IS the
+   operand; the hollow cells are drawn only so you can see what is not. */
+.chunks {
+  display: grid;
+  grid-template-columns: repeat(16, minmax(0, 1fr));
+  gap: 3px;
+  margin-bottom: 1rem;
+}
+
+.chunk {
+  height: 13px;
+  border-radius: 3px;
+  background: rgba(8, 40, 29, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(8, 40, 29, 0.06);
+  transition:
+    background-color 0.22s ease,
+    box-shadow 0.22s ease;
+}
+
+.chunk.on {
+  background: var(--mint-700);
+  box-shadow: inset 0 0 0 1px rgba(35, 121, 84, 0.9);
+}
+
+.demo-drag {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.82rem;
+  color: var(--ink-2);
+  cursor: grab;
+}
+
+.demo-drag b {
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.demo-drag b small {
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.demo .track {
+  margin-top: 0.55rem;
+}
+
+.demo-counts {
+  display: flex;
+  gap: 1.25rem;
+  margin-top: 0.75rem;
+  font-size: 0.76rem;
+  color: var(--ink-2);
+}
+
+.tally {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.tally b {
+  font-size: 1rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.tally.ok b {
+  color: var(--mint-700);
+}
+
+.tally.no b {
+  color: var(--clay-700);
+}
+
+.demo-asks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 1rem 0 0.75rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(8, 40, 29, 0.1);
+}
+
+.chip {
+  font-size: 0.78rem;
+  padding: 0.34rem 0.7rem;
+  border-radius: var(--pill);
+  background: rgba(8, 40, 29, 0.05);
+  border: 1px solid rgba(8, 40, 29, 0.12);
+  color: var(--ink-2);
+  white-space: normal;
+  text-align: left;
+}
+
+.chip:hover {
+  background: rgba(8, 40, 29, 0.09);
+}
+
+.chip.on {
+  background: var(--forest-800);
+  border-color: var(--forest-800);
+  color: var(--cream);
+}
+
+/* the reply. Its whole job is that the same question changes answer when
+   the boundary moves, so the two states must not look alike. */
+.demo-reply {
+  border-radius: var(--r-sm);
+  padding: 0.75rem 0.85rem;
+  border-left: 3px solid;
+  font-size: 0.85rem;
+}
+
+.demo-reply.answered {
+  background: var(--mint-tint);
+  border-left-color: var(--mint-700);
+}
+
+.demo-reply.withheld {
+  background: var(--clay-tint);
+  border-left-color: var(--clay-700);
+}
+
+.demo-reply p {
+  margin: 0.4rem 0 0;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.tag-mini {
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.answered .tag-mini {
+  color: var(--mint-700);
+}
+
+.withheld .tag-mini {
+  color: var(--clay-700);
+}
+
+.demo-reply .cite-mini {
+  font-family: var(--font-mono), ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  color: var(--ink-2);
+  margin-top: 0.5rem;
+}
+
+.demo-foot {
+  font-size: 0.7rem;
+  color: var(--ink-2);
+  margin: 0.8rem 0 0;
+  opacity: 0.85;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step,
+  .step::before,
+  .chunk {
+    transition: none;
+  }
+  .step:hover {
+    transform: none;
+  }
 }
 
 /* the add-a-book dialog --------------------------------------------- */
@@ -1549,6 +1988,16 @@ input[type="file"]::file-selector-button:hover {
     gap: 1.25rem;
     padding-top: 1.5rem;
   }
+  /* stacked, the demo sits under the pitch and should not lean into it */
+  .hero-landing {
+    gap: 1.75rem;
+  }
+  .demo {
+    transform: none;
+  }
+  .hero-landing::before {
+    height: 26rem;
+  }
   .grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1579,6 +2028,14 @@ input[type="file"]::file-selector-button:hover {
   .stats,
   .split {
     grid-template-columns: minmax(0, 1fr);
+  }
+  /* fewer, chunkier cells: 16 across is a stripe pattern on a phone */
+  .chunks {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+  }
+  /* both routes in get equal width, but they wrap before either is squeezed */
+  .hero-cta button {
+    flex: 1 1 11rem;
   }
   .stat + .stat {
     border-left: 0;
