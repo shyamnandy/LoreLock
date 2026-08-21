@@ -21,22 +21,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.agents import llm
+# Aliased: line 479 binds `app = api` for the ASGI entrypoint
+# convention, which shadows the `app` PACKAGE inside this module --
+# so a plain `import app.config` would resolve to the FastAPI object
+# at call time. Imported as a module, not as a value, because the
+# ingest flag must stay overridable after import.
+from app import config as app_config
 from app.config import RAW, WORDS_PER_PAGE
 from app.graph import ask
 from app.ingestion import sources, upload
 from app.ingestion.pipeline import ingest_file, ingest_from_gutenberg
-from app.store import db, embedders, remote, vectors
+from app.store import db, embedders, seed, vectors
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
+    # Before the first connect, which would create an empty database at
+    # DB_PATH and so convince hydrate() that this host already has one.
+    if installed := seed.hydrate():
+        print(f"hydrated the index from seed/ ({installed} book(s))")
+    # Before the first question, and before anything reports which key is in
+    # use: a key pasted in an earlier run is only persistent if it is back in
+    # the environment by the time a backend reads it.
+    if restored := llm.restore_saved_keys():
+        print(f"restored a saved API key for {', '.join(restored)}")
     with closing(db.connect()) as conn:
-        # Rebuild the local index from the system of record before serving.
-        # On a host without a persistent disk this is what makes the library
-        # survive a redeploy; on a warm disk it costs one round trip and
-        # writes nothing. No-op when MONGODB_URI is unset.
-        if hydrated := remote.hydrate(conn):
-            print(f"hydrated {hydrated} book(s) from Atlas")
-
         # a background ingest belongs to one process; if we are starting up, any
         # job still marked in-flight was owned by a process that is now gone
         if reaped := db.reap_orphan_jobs(conn):
@@ -62,6 +70,21 @@ api.add_middleware(
 
 
 # -- schemas ---------------------------------------------------------------
+
+class ApiKeyIn(BaseModel):
+    # A key is a credential, not free text: bound so a paste of the wrong
+    # thing (a whole .env file, a URL) is rejected before it reaches the
+    # provider. `repr=False` keeps it out of pydantic's __repr__, which is
+    # what a validation error or an unhandled traceback would print.
+    api_key: str = Field(min_length=8, max_length=512, repr=False)
+
+
+class ApiKeyOut(BaseModel):
+    """Where the live key came from. Never the key itself -- see llm.key_hint."""
+    provider: str
+    source: str          # none | missing | environment | override
+    hint: str            # last four characters, "" when there is no key
+
 
 class BookOut(BaseModel):
     id: str
@@ -177,8 +200,54 @@ def health() -> dict:
         ready = [b for b in db.list_books(conn) if vectors.exists(b.id)]
     return {"status": "ok", "books_indexed": len(ready),
             "answer_provider": llm.provider_name(),
-            "embed_provider": embedders.provider_name(),
+            "embed_model": embedders.model_name(),
             "commit": os.environ.get("RENDER_GIT_COMMIT", "unknown")[:7]}
+
+
+# -- the provider key ------------------------------------------------------
+#
+# Lets a reader supply their OWN key from the UI instead of running on the
+# deployment's. The free tiers this runs on meter tokens per day per account,
+# so the shared key is the resource that actually runs out; pasting a personal
+# one is the difference between a demo that answers and one that 429s.
+#
+# The override is the process environment, which is what app.agents.llm reads
+# and therefore the only place a change takes effect without a redeploy. Two
+# consequences worth being clear about rather than hiding:
+#   - it is PROCESS-WIDE. There is one environment, so a pasted key serves
+#     every concurrent reader, not just the one who pasted it.
+#   - it lives in memory only. A restart -- which a free instance does every
+#     time it sleeps -- returns the process to its configured key.
+# Both are why DELETE restores the baseline rather than blanking it: falling
+# back to the deployment's own key is the safe resting state.
+
+@api.get("/config/api-key", response_model=ApiKeyOut)
+def get_api_key() -> ApiKeyOut:
+    return ApiKeyOut(**llm.key_state())
+
+
+@api.post("/config/api-key", response_model=ApiKeyOut)
+def set_api_key(body: ApiKeyIn) -> ApiKeyOut:
+    """Verify a pasted key, then make it the live one.
+
+    Verified BEFORE it is installed, and the current key is left untouched if
+    the check fails. Installing first would let one typo take down a working
+    deployment until someone redeployed it.
+    """
+    try:
+        llm.verify_key(body.api_key)
+        return ApiKeyOut(**llm.set_api_key(body.api_key))
+    except llm.LLMError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@api.delete("/config/api-key", response_model=ApiKeyOut)
+def clear_api_key() -> ApiKeyOut:
+    """Discard the override and fall back to the configured key."""
+    try:
+        return ApiKeyOut(**llm.clear_api_key())
+    except llm.LLMError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @api.get("/books", response_model=list[BookOut])
@@ -235,9 +304,6 @@ def delete_book(book_id: str) -> None:
         vectors.delete(book_id)
         db.delete_book(conn, book_id)
 
-    # and from the system of record, or the next boot hydrates it back
-    remote.delete_book(book_id)
-
     # uploads keep their source as RAW/{book_id}{suffix}; the suffix varies
     # (.epub, .txt, .html) so match on the stem
     for stored in RAW.glob(f"{book_id}.*"):
@@ -260,6 +326,23 @@ def resolve(body: ResolveIn) -> list[CandidateOut]:
             )
             for c in found
         ]
+
+
+def _require_ingest_allowed() -> None:
+    """Refuse an ingest this host cannot afford to finish.
+
+    Checked in the REQUEST, not in the background worker: the whole point is
+    to fail before a job row exists and before a file is written, so the
+    client gets a synchronous error instead of a job that polls its way to
+    a failure -- or, on a killed container, never resolves at all.
+    """
+    if not app_config.ALLOW_RUNTIME_INGEST:
+        raise HTTPException(
+            503,
+            "this deployment serves a prebuilt library and cannot index new "
+            "books -- indexing needs more CPU and memory than the instance "
+            "has. Index locally, run scripts/build_seed.py, and redeploy.",
+        )
 
 
 def _run_ingest(job_id: str, query: str,
@@ -296,6 +379,7 @@ def ingest(body: ResolveIn, background: BackgroundTasks) -> JobOut:
     than any browser or proxy will hold a connection open. The client polls
     /books/ingest/{job_id}.
     """
+    _require_ingest_allowed()
     query = body.query.strip()
     with closing(db.connect()) as conn:
         if existing := db.active_job_for(conn, query):
@@ -339,6 +423,7 @@ async def upload_book(background: BackgroundTasks,
     Gutenberg only carries public-domain work, so anything still in copyright
     can only arrive this way -- from the reader's own DRM-free file.
     """
+    _require_ingest_allowed()
     data = await file.read()
     try:
         path, book_id, _digest = upload.store(file.filename or "book.txt", data)

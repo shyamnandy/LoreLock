@@ -1,13 +1,20 @@
 # Render blueprint for the backend.
 #
-# No `disk:` block, and that is the point: persistent disks require a paid
-# instance type, and the free tier rejects a blueprint that asks for one.
-# Instead the container is disposable -- MongoDB Atlas is the system of
-# record and app/store/remote.py rebuilds the local index on boot.
+# DATA_DIR IS EPHEMERAL ON THE FREE TIER: there is no `disk:` block because
+# persistent disks require a paid instance type, so the filesystem resets on
+# every redeploy and every wake from sleep.
+#
+# What survives that is the seed library baked into the image (see the
+# Dockerfile and app/store/seed.py): on a boot that finds /data empty, the
+# container installs the public-domain books and their embeddings, so the
+# API is never up with an empty shelf. Runtime ingestion is switched OFF
+# here (ALLOW_RUNTIME_INGEST below) precisely because anything it produced
+# would be both expensive to build and lost on the next boot. To index on
+# the host instead, add a `disk:` block on a paid plan and set the flag
+# back to 1.
 #
 # The free tier sleeps after ~15 minutes of inactivity; the first request
-# after a sleep pays a cold start (container boot + hydration, ~30-60s).
-# To remove that, upgrade to a paid plan -- no code change is needed.
+# after a sleep pays a container cold start.
 services:
   - type: web
     name: reading-companion-api
@@ -16,21 +23,34 @@ services:
     plan: free
     healthCheckPath: /health
     envVars:
-      # writable working copy; ephemeral by design, rehydrated at startup
+      # writable working copy -- ephemeral without a mounted disk
       - key: DATA_DIR
         value: /data
       - key: LLM_PROVIDER
         value: groq
-      # The free tier is 512 MB and indexing is what gets closest to it.
-      # Explicit here rather than left to the code default so the limit is
-      # visible next to the plan that imposes it. See .env.example.
+      # This instance SERVES a library, it does not build one. Indexing is
+      # minutes of pegged CPU on a fraction of a core, it is the app's memory
+      # high-water mark, and with no mounted disk the result is discarded on
+      # the next boot -- so the endpoints refuse up front rather than
+      # accepting a job the platform will kill. The shelf comes from the seed
+      # baked into the image; rebuild it with scripts/build_seed.py locally
+      # and commit. Drop this (or set 1) on a paid plan with a disk.
+      - key: ALLOW_RUNTIME_INGEST
+        value: "0"
+      # Still load-bearing with ingest off: app/retrieval/firewall.py embeds
+      # every incoming QUESTION, so the model is resident for as long as the
+      # API serves. Explicit here rather than left to the code default so the
+      # limits sit next to the plan that imposes them. See .env.example.
+      #
+      # Batch 4, not 8: 246 MB peak vs 300 MB, for ~6% more time (CHALLENGES
+      # 6). Threads 1, not 2: a free instance is entitled to a FRACTION of
+      # one core, so a second ONNX intra-op thread buys no parallelism and
+      # costs a second set of per-thread arenas plus the contention.
       - key: EMBED_BATCH
-        value: "8"
+        value: "4"
       - key: EMBED_THREADS
-        value: "2"
+        value: "1"
       # --- secrets: set in the Render dashboard, never in git -------------
-      - key: MONGODB_URI
-        sync: false          # mongodb+srv://... from Atlas
       - key: GROQ_API_KEY
         sync: false          # console.groq.com/keys
       - key: CORS_ORIGINS

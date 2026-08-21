@@ -17,7 +17,3 @@ uvicorn[standard]==0.52.3
 # not a broken endpoint. Present in the local venv as a transitive dep,
 # which is exactly why it went unnoticed until the image was run.
 python-multipart==0.0.32
-
-# durable store for the index (app/store/remote.py). pymongo 4.x depends on
-# dnspython directly, which is what mongodb+srv:// URIs resolve through.
-pymongo==4.10.1

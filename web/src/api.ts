@@ -62,6 +62,19 @@ export type ChatReply = {
   evidence: Evidence[];
 };
 
+// The status matters to one caller: a 404 on a session id is recoverable
+// (the backend restarted and lost the row), where every other failure is
+// something to show the reader. A bare Error cannot express that.
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, {
     ...init,
@@ -75,7 +88,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* body was not json; keep the status text */
     }
-    throw new Error(detail);
+    throw new ApiError(detail, res.status);
   }
   // 204 has no body at all, and res.json() would throw on the empty string
   if (res.status === 204) return undefined as T;
@@ -86,6 +99,17 @@ type Health = {
   status: string;
   books_indexed: number;
   answer_provider: string;
+};
+
+// Where the backend's live provider key came from. `hint` is the last four
+// characters and nothing more -- the key itself never comes back over the
+// wire, so the UI can say WHICH key is in use without ever holding it again.
+export type ApiKeyState = {
+  provider: string;
+  // none: this provider needs no key · missing: it needs one and has none
+  // environment: the deployment's own key · override: one pasted from here
+  source: "none" | "missing" | "environment" | "override";
+  hint: string;
 };
 
 export const api = {
@@ -182,6 +206,22 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ page }),
     }),
+
+  // The provider key the server is answering with. Reported, never echoed.
+  apiKeyState: () => req<ApiKeyState>("/config/api-key"),
+
+  // Paste your own key. The server verifies it against the provider before
+  // installing it, so a rejected key leaves the working one in place and
+  // this throws with the provider's reason.
+  setApiKey: (api_key: string) =>
+    req<ApiKeyState>("/config/api-key", {
+      method: "POST",
+      body: JSON.stringify({ api_key }),
+    }),
+
+  // Drop the pasted key and fall back to whatever the deployment was
+  // configured with.
+  clearApiKey: () => req<ApiKeyState>("/config/api-key", { method: "DELETE" }),
 
   chat: (session_id: string, question: string, position: number) =>
     req<ChatReply>("/chat", {

@@ -20,8 +20,30 @@ from app.config import VALIDATOR_USE_MODEL
 #
 # Leniency here is about FORMAT only. Membership stays strict: every resolved
 # id must be in the supplied evidence set, which is the property that matters.
-_BRACKET = re.compile(r"\[([^\]\n]{1,200})\]")
+_BRACKET = re.compile(r"[\[［【〔⟦〚]"
+                      r"([^\]］】〕⟧〛\n]{1,200})"
+                      r"[\]］】〕⟧〛]")
 _CHUNK_REF = re.compile(r"(?:([A-Za-z0-9_.\-]+)::)?(c\d{4,6})")
+
+# Models intermittently reach for a full-width or CJK bracket instead of the
+# ASCII one the prompt asks for -- gpt-oss-120b emits 【c00065】 often enough
+# to matter. The citation is CORRECT; only the glyph is not. Under an
+# ASCII-only pattern that scored as "no citation at all", which failed
+# validation, burned both retries at ~2,700 tokens each, and then refused a
+# question the model had already answered from the right passage: three
+# calls and a wrong outcome, for a bracket.
+#
+# Normalising to ASCII before anything parses it fixes the reader's copy
+# too, so citations render one way whichever glyph came back.
+_BRACKET_VARIANTS = str.maketrans({
+    "［": "[", "【": "[", "〔": "[", "⟦": "[", "〚": "[",
+    "］": "]", "】": "]", "〕": "]", "⟧": "]", "〛": "]",
+})
+
+
+def normalise_citations(draft: str) -> str:
+    """Rewrite full-width/CJK citation brackets to ASCII."""
+    return draft.translate(_BRACKET_VARIANTS)
 
 
 def _resolve(draft: str, allowed: set[str]) -> tuple[list[str], list[str]]:

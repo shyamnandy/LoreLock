@@ -1101,6 +1101,28 @@ input[type="file"]::file-selector-button:hover {
   color: var(--ink);
 }
 
+/* The key sits in the nav beside "Add a book", so it must read as secondary
+   to it: round like the bar it lives in, no fill until hovered. Gold is the
+   app's one action colour and belongs to the button next to it, which is why
+   a pasted key is marked in mint -- the palette's "admitted" -- rather than
+   competing for it. */
+.nav-key {
+  flex: none;
+  border-radius: var(--pill);
+}
+
+.nav-key.on {
+  color: var(--mint-700);
+  border-color: rgba(35, 121, 84, 0.35);
+  background: var(--mint-tint);
+}
+
+.nav-key.warn {
+  color: var(--clay-700);
+  border-color: rgba(180, 87, 58, 0.35);
+  background: var(--clay-tint);
+}
+
 .icon-btn-danger:hover:not(:disabled) {
   color: var(--clay-700);
   background: var(--clay-tint);
@@ -1346,6 +1368,12 @@ input[type="file"]::file-selector-button:hover {
   box-shadow: var(--lift);
   padding: 1rem 1.15rem 1.15rem;
   animation: rise 0.16s ease-out;
+}
+
+/* The key dialog holds one field and three sentences; at the add-a-book
+   width the line length reads as a form with something missing. */
+.modal-narrow {
+  width: min(27rem, 100%);
 }
 
 .modal-head {

@@ -13,3 +13,10 @@ data/raw/
 data/db/
 data/*.log
 data/.jobid
+
+# --- NOT ignored: seed/ ---
+# The prebuilt library that ships in the image is tracked on purpose. Render
+# builds from this checkout, so an untracked index cannot reach the
+# container. Build it with scripts/build_seed.py, which excludes uploads --
+# the chunk table holds full passage text, and a reader's own EPUB of an
+# in-copyright book must never be committed here.

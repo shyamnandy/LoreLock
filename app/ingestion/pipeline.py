@@ -8,7 +8,7 @@ from pathlib import Path
 from app.ingestion import cleaner, parsers, sources
 from app.ingestion.chunker import Section, chunk_book, total_words
 from app.models import Book
-from app.store import db, remote, vectors
+from app.store import db, vectors
 
 
 def _sections_from_text(raw: str) -> list[Section]:
@@ -53,11 +53,6 @@ def ingest_file(
     matrix = vectors.embed_texts([c.text for c in chunks], progress=True)
     vectors.save(book_id, matrix)
     vectors.load.cache_clear()
-
-    # Write through to the system of record. Local disk may be ephemeral --
-    # this is what makes the book survive a redeploy. Deliberately last, and
-    # deliberately non-raising: the ingest has already succeeded by here.
-    remote.push_book(book, checksum, chunks, matrix)
 
     return book
 

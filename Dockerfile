@@ -1,9 +1,9 @@
 # Backend image.
 #
 # The API needs a real filesystem: SQLite, the FTS5 index and the embedding
-# matrices are files, and retrieval slices those matrices directly. That
-# state is rebuilt on boot from MongoDB Atlas (app/store/remote.py), so the
-# filesystem can be ephemeral -- but it cannot be absent.
+# matrices are files, and retrieval slices those matrices directly. There is
+# no remote copy -- whatever is under DATA_DIR IS the library, so that path
+# must be durable if the index is to survive a redeploy.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -16,7 +16,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv
 
-# ca-certificates is required for the TLS handshake with Atlas
+# ca-certificates is required for TLS to the model host and the LLM provider
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -38,9 +38,19 @@ RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BA
 COPY app ./app
 COPY scripts ./scripts
 
+# The prebuilt, public-domain-only library. Read-only and outside DATA_DIR:
+# the container copies it into /data on first boot (app.store.seed), so a
+# host with no persistent disk still comes up with books instead of an empty
+# shelf. Rebuild it with scripts/build_seed.py and commit the result --
+# Render builds from the git checkout, so an untracked seed reaches nothing.
+COPY seed ./seed
+ENV SEED_DIR=/srv/seed
+
 # Writable state. Deliberately NOT a VOLUME: a declared volume shadows the
 # path, and Render mounts its own disk here anyway if a blueprint asks for
-# one. Ephemeral is fine -- app/store/remote.py rebuilds it at startup.
+# one. NOTE: without a mounted disk this is ephemeral. The seed above is
+# what makes that survivable -- but only for the books baked in. Anything
+# ingested at runtime still dies with the container.
 ENV DATA_DIR=/data
 RUN mkdir -p /data && chown -R companion:companion /data /srv
 USER companion

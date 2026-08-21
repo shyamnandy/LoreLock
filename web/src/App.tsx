@@ -1,14 +1,57 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
+  ApiError,
   type Book,
   type Candidate,
   type ChatReply,
+  type ApiKeyState,
   type Job,
   type Session,
 } from "@/api";
 
 type Turn = { page: number; question: string; reply: ChatReply };
+
+/* The pasted key, remembered in this browser.
+
+   The server persists it too, and on a host with a disk that is the only
+   copy that matters. This exists for the host the app is actually deployed
+   to: a free instance has no disk, so its saved key dies with the container
+   every time it sleeps. Keeping one here lets the next page load put it
+   straight back rather than asking for it again after every nap.
+
+   The trade is explicit: an API key at rest in localStorage is readable by
+   any script that gets to run on this origin. That is the reader's own key,
+   in the reader's own browser, and the alternative is a feature that stops
+   working every fifteen minutes -- but it is a trade, not a free win.
+   Clearing the key from the dialog removes it here as well. */
+const KEY_STORAGE = "bookmate.apiKey";
+
+// wrapped: Safari in private mode throws on both get and set, and a storage
+// failure must not take the app down with it
+function rememberedKey(): string {
+  try {
+    return localStorage.getItem(KEY_STORAGE) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberKey(key: string) {
+  try {
+    localStorage.setItem(KEY_STORAGE, key);
+  } catch {
+    /* no storage; the key still lives for this session on the server */
+  }
+}
+
+function forgetKey() {
+  try {
+    localStorage.removeItem(KEY_STORAGE);
+  } catch {
+    /* nothing to forget */
+  }
+}
 
 const OUTCOME_TAG: Record<ChatReply["outcome"], string> = {
   answered: "answered from what you've read",
@@ -77,6 +120,66 @@ function Trash({ size = 16 }: { size?: number }) {
   );
 }
 
+/* A key: bit, shaft, ring. Small enough to sit in the nav without competing
+   with the one button up there that matters, which is "Add a book". */
+function Key({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+    >
+      <circle
+        cx="5.4"
+        cy="5.4"
+        r="3"
+        stroke="currentColor"
+        strokeWidth="1.35"
+      />
+      <path
+        d="M7.6 7.6 13.4 13.4M11.3 11.3l-1.5 1.5M13.4 13.4l1.1-1.1"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/* A clipboard. The nav's key means "which key is answering"; this means
+   "put one here", so they must not be the same glyph. */
+function Clipboard({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M6 3H4.6a1 1 0 0 0-1 1v8.4a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1H10"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <rect
+        x="6"
+        y="1.9"
+        width="4"
+        height="2.4"
+        rx="0.8"
+        stroke="currentColor"
+        strokeWidth="1.3"
+      />
+    </svg>
+  );
+}
+
 function Close({ size = 16 }: { size?: number }) {
   return (
     <svg
@@ -125,7 +228,16 @@ export default function App() {
   const [libOpen, setLibOpen] = useState(true);
   // Adding a book is an errand, not a place: it happens in a dialog opened
   // from the header, so the shelf below is only ever a list of what you have.
-  const [modal, setModal] = useState<null | "search" | "upload">(null);
+  const [modal, setModal] = useState<null | "search" | "upload" | "apikey">(
+    null,
+  );
+  // the reader's own provider key. `keyState` is what the SERVER reports is
+  // in use -- never the key -- so this component never holds a credential
+  // beyond the moment between pasting and submitting.
+  const [keyState, setKeyState] = useState<ApiKeyState | null>(null);
+  const [keyInput, setKeyInput] = useState("");
+  const [keySaving, setKeySaving] = useState(false);
+  const [keyNote, setKeyNote] = useState<string | null>(null);
   // declaring the edition's page count
   const [editionOpen, setEditionOpen] = useState(false);
   const [editionInput, setEditionInput] = useState("");
@@ -135,12 +247,41 @@ export default function App() {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const openerRef = useRef<HTMLElement | null>(null);
 
+  // At most once a page load: putting a remembered key back into a backend
+  // that has lost it. `rearmed` is a ref, not state, because loadLibrary runs
+  // again after every add and delete and this must not.
+  const rearmed = useRef(false);
+
+  const adoptKeyState = useCallback(async (state: ApiKeyState) => {
+    setKeyState(state);
+    const saved = rememberedKey();
+    if (rearmed.current || !saved || state.source === "none") return;
+    rearmed.current = true;
+    // Already live? The hint is four characters, which is exactly enough to
+    // answer that without putting the key back on the wire to find out.
+    if (state.hint === `...${saved.slice(-4)}`) return;
+    try {
+      setKeyState(await api.setApiKey(saved));
+    } catch {
+      // revoked, rotated, or rejected by this backend. Drop it rather than
+      // re-offering a key that cannot work on every future load.
+      forgetKey();
+    }
+  }, []);
+
   const loadLibrary = useCallback(async () => {
     const [list, health] = await Promise.all([api.books(), api.health()]);
     setBooks(list);
     setProvider(health.answer_provider);
+    // Separately, and swallowed: an older backend has no /config/api-key, and
+    // the shelf must still load against one. A null keyState just hides the
+    // key affordance rather than failing the page.
+    api
+      .apiKeyState()
+      .then(adoptKeyState)
+      .catch(() => setKeyState(null));
     return list;
-  }, []);
+  }, [adoptKeyState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -296,19 +437,35 @@ export default function App() {
     book && book.total_pages ? (page / book.total_pages) * 100 : 0;
 
   const ask = useCallback(async () => {
-    if (!session || !question.trim()) return;
+    if (!session || !book || !question.trim()) return;
+    const text = question.trim();
     setBusy(true);
     setError(null);
     try {
-      const reply = await api.chat(session.id, question.trim(), position);
-      setTurns((t) => [{ page, question: question.trim(), reply }, ...t]);
+      let reply: ChatReply;
+      try {
+        reply = await api.chat(session.id, text, position);
+      } catch (e) {
+        // The free-tier backend has no persistent disk, so a sleep or a
+        // redeploy takes the sessions table with it and the id in this tab
+        // stops resolving. The books come back with the same ids (they are
+        // seeded into the image), so the session is re-creatable and the
+        // reader should never have to know. Retried exactly once: if the
+        // fresh id 404s too, something else is wrong and hiding it would
+        // only turn one error into two round trips.
+        if (!(e instanceof ApiError && e.status === 404)) throw e;
+        const revived = await api.createSession(book.id, position);
+        setSession(revived);
+        reply = await api.chat(revived.id, text, position);
+      }
+      setTurns((t) => [{ page, question: text, reply }, ...t]);
       setQuestion("");
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [session, question, position, page]);
+  }, [session, book, question, position, page]);
 
   // Deleting is not undoable and takes the transcripts with it, so it asks
   // first. The open book is only replaced if it is the one that went.
@@ -344,6 +501,9 @@ export default function App() {
 
   const closeModal = useCallback(() => {
     setModal(null);
+    // never leave a pasted credential sitting in state behind a closed dialog
+    setKeyInput("");
+    setKeyNote(null);
     // send focus back where it came from, so the header does not lose its
     // place for anyone driving this from the keyboard
     openerRef.current?.focus();
@@ -351,13 +511,73 @@ export default function App() {
   }, []);
 
   const openModal = useCallback(
-    (which: "search" | "upload", e: React.MouseEvent<HTMLButtonElement>) => {
+    (
+      which: "search" | "upload" | "apikey",
+      e: React.MouseEvent<HTMLButtonElement>,
+    ) => {
       openerRef.current = e.currentTarget;
       setError(null);
       setModal(which);
     },
     [],
   );
+
+  const saveApiKey = useCallback(async () => {
+    const key = keyInput.trim();
+    if (!key) return;
+    setKeySaving(true);
+    setKeyNote(null);
+    try {
+      // The server verifies against the provider before installing, so a
+      // resolved promise means the key genuinely authenticates -- not merely
+      // that it was accepted.
+      setKeyState(await api.setApiKey(key));
+      rememberKey(key);
+      rearmed.current = true;
+      setKeyInput("");
+      setKeyNote("Saved. Answers now use your key, and it will be remembered.");
+    } catch (e) {
+      setKeyNote(`Not saved — ${(e as Error).message}`);
+    } finally {
+      setKeySaving(false);
+    }
+  }, [keyInput]);
+
+  const clearApiKey = useCallback(async () => {
+    setKeySaving(true);
+    setKeyNote(null);
+    try {
+      const next = await api.clearApiKey();
+      forgetKey();
+      setKeyState(next);
+      setKeyInput("");
+      setKeyNote(
+        next.source === "environment"
+          ? "Cleared. Back to the server's own key."
+          : "Cleared. The server has no key configured.",
+      );
+    } catch (e) {
+      setKeyNote(`Could not clear — ${(e as Error).message}`);
+    } finally {
+      setKeySaving(false);
+    }
+  }, []);
+
+  // Paste straight from the clipboard. The Clipboard API needs a secure
+  // context and a permission the reader may refuse, so this is an ACCELERANT
+  // for the field beside it, never the only way in -- on a refusal the input
+  // is simply focused so they can paste with the keyboard.
+  const pasteApiKey = useCallback(async () => {
+    setKeyNote(null);
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (text) setKeyInput(text);
+      else setKeyNote("Nothing on the clipboard.");
+    } catch {
+      setKeyNote("Clipboard is blocked here — paste into the field instead.");
+      dialogRef.current?.querySelector<HTMLInputElement>("#apikey")?.focus();
+    }
+  }, []);
 
   useEffect(() => {
     if (!modal) return;
@@ -462,7 +682,7 @@ export default function App() {
 
   /* ---------------------------------------------------------------- */
 
-  const addDialog = modal && (
+  const addDialog = (modal === "search" || modal === "upload") && (
     <div
       className="backdrop"
       onMouseDown={(e) => {
@@ -645,6 +865,123 @@ export default function App() {
     </div>
   );
 
+  /* The provider key. A dialog rather than a settings page because it is a
+     once-in-a-while errand, and one the reader arrives at from a single icon.
+     What it never does is show the key back: the server returns four
+     characters, which answers "is mine the one in use?" and nothing else. */
+  const keyDialog = modal === "apikey" && (
+    <div
+      className="backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) closeModal();
+      }}
+    >
+      <div
+        className="modal modal-narrow"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="key-title"
+        ref={dialogRef}
+      >
+        <div className="modal-head">
+          <h2 className="modal-title" id="key-title">
+            Answer model key
+          </h2>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={closeModal}
+            aria-label="Close"
+            title="Close"
+          >
+            <Close />
+          </button>
+        </div>
+
+        <div className="modal-body">
+          <p className="sub">
+            The shared key is metered per day. Paste your own{" "}
+            <strong>{keyState?.provider ?? "provider"}</strong> key and answers
+            are billed to it instead. It is checked against the provider
+            before it is saved, and never shown back.
+          </p>
+
+          <label htmlFor="apikey">API key</label>
+          <div className="row">
+            <input
+              id="apikey"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="gsk_…"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && saveApiKey()}
+              disabled={keySaving}
+            />
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={pasteApiKey}
+              disabled={keySaving}
+              aria-label="Paste from clipboard"
+              title="Paste from clipboard"
+            >
+              <Clipboard />
+            </button>
+            <button
+              className="btn-dark"
+              onClick={saveApiKey}
+              disabled={keySaving || keyInput.trim().length < 8}
+            >
+              {keySaving ? "Checking…" : "Save"}
+            </button>
+          </div>
+
+          {keyNote && <p className="sub">{keyNote}</p>}
+
+          <p className="sub">
+            {keyState?.source === "override" ? (
+              <>
+                In use: <strong>your key</strong> ({keyState.hint}) ·{" "}
+                <button
+                  type="button"
+                  className="link"
+                  onClick={clearApiKey}
+                  disabled={keySaving}
+                >
+                  use the server's key instead
+                </button>
+              </>
+            ) : keyState?.source === "environment" ? (
+              <>
+                In use: the server's own key ({keyState.hint}).
+              </>
+            ) : keyState?.source === "missing" ? (
+              <>
+                The server has <strong>no key</strong> — questions will fail
+                until one is pasted here.
+              </>
+            ) : (
+              <>
+                This provider needs no key
+                {keyState?.provider ? ` (${keyState.provider})` : ""}.
+              </>
+            )}
+          </p>
+
+          {/* Said plainly rather than discovered: one process, one
+              environment, so this is not a per-reader setting. */}
+          <p className="nudge">
+            Kept on the server and in this browser, so it survives a restart —
+            clearing it removes both. One key serves the whole server, so a
+            key pasted here is used for everyone connected to it.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+
   /* ---------------------------------------------------------------- */
 
   return (
@@ -679,6 +1016,29 @@ export default function App() {
             </select>
           )}
         </div>
+
+        {/* Hidden when the provider takes no key at all -- on the stub
+            backend there is nothing here to configure. `on` marks a pasted
+            key, so the nav says which key is answering without a label. */}
+        {keyState && keyState.source !== "none" && (
+          <button
+            type="button"
+            className={`icon-btn nav-key${
+              keyState.source === "override" ? " on" : ""
+            }${keyState.source === "missing" ? " warn" : ""}`}
+            onClick={(e) => openModal("apikey", e)}
+            aria-label="Answer model key"
+            title={
+              keyState.source === "override"
+                ? `Answering with your key (${keyState.hint})`
+                : keyState.source === "missing"
+                  ? "No API key set — answers will fail"
+                  : "Paste your own API key"
+            }
+          >
+            <Key />
+          </button>
+        )}
 
         {/* both routes in are tabs of the dialog this opens */}
         <button className="btn-gold" onClick={(e) => openModal("search", e)}>
@@ -1067,9 +1427,11 @@ export default function App() {
         and the searched matrix is the slice <code>E[:n_p]</code> — future
         passages are absent from the operand, not filtered out of it.
         {provider ? ` Answer model: ${provider}.` : ""}
+        {keyState?.source === "override" ? " Running on your API key." : ""}
       </p>
 
       {addDialog}
+      {keyDialog}
     </div>
   );
 }

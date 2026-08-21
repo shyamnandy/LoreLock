@@ -182,6 +182,48 @@ pass.
 **Cost.** Indexing is slower: ~10% from the batch change, plus the loss of the
 parallel pool. On a fractional-CPU instance that is a real penalty.
 
+### 6b. …and then CPU, which no amount of tuning fixes
+
+**Symptom.** With memory solved, ingests still stalled and got the container
+restarted. The remaining constraint is CPU: a free instance is entitled to a
+*fraction* of one core, and embedding a novel is several hundred transformer
+forward passes.
+
+**What was ruled out.** A lighter framework. `bge-small-en-v1.5` is already the
+smallest model fastembed serves — 69 MB, against 92 MB for the next one up and
+215 MB for `bge-base` — and fastembed/ONNX is itself the floor, with
+sentence-transformers pulling torch for 5–10× the weight. There is nowhere
+lighter to go *inside this shape*, and a framework swap would not have helped
+anyway: the cost is FLOPs per token, not overhead.
+
+**Fix — stop building the index on the box that serves it.**
+
+- `ALLOW_RUNTIME_INGEST=0` (`render.yaml`) makes `/books/ingest` and
+  `/books/upload` refuse with a 503 in the *request*, before a job row exists
+  and before an upload is written to disk. Accepting the job and failing in the
+  background is strictly worse: on a killed container the job never resolves at
+  all, so the client polls forever. The library comes from the seed baked into
+  the image instead — index on a real machine, `scripts/build_seed.py`, commit.
+- `EMBED_THREADS=2` → `1`. Below one core a second ONNX intra-op thread buys no
+  parallelism and costs contention plus a second set of per-thread arenas.
+- `EMBED_BATCH=8` → `4`. 246 MB peak instead of 300 MB, for ~6% more time —
+  worth it once ingest throughput is no longer the thing being optimised.
+- `CHUNK_OVERLAP=80` → `40`. At 80 every word of the book is embedded 1.25
+  times. Chunking happens at ingest, so this rebinds nothing already on disk;
+  books already indexed keep their boundaries and their matrices stay valid.
+
+**What this does NOT remove.** The model stays resident. `app.retrieval.firewall`
+embeds every incoming *question*, so the ~190 MB is the cost of serving, not
+just of indexing. Removing it entirely means a hosted embedding API — which
+also changes `EMBED_DIM` and invalidates every stored vector, so it is a
+re-index of the whole library, not a config change.
+
+**Gotcha found on the way.** `app/api.py` binds `app = api` for the ASGI
+entrypoint convention, which shadows the `app` *package* inside that module —
+`import app.config` there resolves to the FastAPI object at call time. Imported
+as `from app import config as app_config`, and as a module rather than a value,
+so the flag stays overridable after import.
+
 ---
 
 ## 7. Free-tier characteristics that look like bugs

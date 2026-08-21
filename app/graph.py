@@ -225,7 +225,8 @@ def answer(state: ReaderState) -> dict:
 
     try:
 
-        draft = llm.chat(ANSWER_SYSTEM, prompt, role="answer", temperature=0.0).text
+        draft = validator.normalise_citations(
+            llm.chat(ANSWER_SYSTEM, prompt, role="answer", temperature=0.0).text)
 
     except llm.LLMError as exc:
 
@@ -252,6 +253,8 @@ def validate(state: ReaderState) -> dict:
     result = validator.check(
 
         state["draft"], allowed,
+
+        evidence=state["evidence"],
 
         evidence_text="\n".join(f"[{e.chunk.id}] {e.chunk.text[:400]}"
 

@@ -23,8 +23,8 @@ def embed_texts(texts: list[str], progress: bool = False,
                 input_type: str = "document") -> np.ndarray:
     """Embed and L2-normalise, so cosine similarity is a plain dot product.
 
-    Which backend runs is EMBED_PROVIDER's business (app.store.embedders);
-    normalisation happens here so it happens exactly once either way.
+    The backend is app.store.embedders' business; normalisation happens
+    here so it happens exactly once.
     """
     matrix = embedders.embed(texts, input_type=input_type, progress=progress)
     # In place: `matrix / norms` would allocate a second full matrix, and for

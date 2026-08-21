@@ -11,7 +11,8 @@
 .env.*
 !.env.example
 
-# the index: rebuilt on boot from Atlas, never baked in
+# the working index -- machine-local and ~16 MB. What ships instead is
+# seed/, a public-domain-only copy built from it by scripts/build_seed.py.
 data/
 
 # frontend: deployed separately on Vercel
