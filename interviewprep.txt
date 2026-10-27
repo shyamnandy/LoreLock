@@ -1,0 +1,616 @@
+========================================================================
+BOOKMATE / SPOILER-SAFE READING COMPANION — INTERVIEW PREP BRIEF
+(internal code name in CHALLENGES.md: "LoreLock")
+Generated from a full read of app/, tests/, scripts/, README.md, CHALLENGES.md
+========================================================================
+
+
+------------------------------------------------------------------------
+1. THE 30-SECOND SUMMARY
+------------------------------------------------------------------------
+
+"I built a RAG system that answers questions about a book you're partway
+through without ever risking a spoiler. You tell it your reading position
+(a word offset), and architecturally it is physically incapable of
+answering from anything past that point — retrieval only ever searches a
+NumPy slice of the embedding matrix, E[:n_p], where n_p is the count of
+chunks you've fully read. The interesting problem wasn't 'build a chatbot
+over a book' — it was proving the safety property structurally, in memory
+layout, instead of trusting a prompt instruction or a post-hoc filter that
+someone could forget to call.
+
+On top of that firewall sits a LangGraph pipeline with real branching: it
+decides whether it has enough evidence to answer, and if not, consults an
+air-gapped oracle that can see the whole book but returns only a boolean
+— 'is this answered later?' — never text. That's what lets it distinguish
+'ask me again once you're further in' from 'I don't have enough on this
+at all,' without ever leaking future prose to do it. A citation-checking
+validator with a bounded retry loop keeps answers grounded in exactly the
+passages retrieved.
+
+I also built a synthetic-novella eval harness with planted, provably-
+unique facts so I could measure spoiler leakage as a number instead of
+eyeballing it, and then hit a string of real deployment problems —
+container OOM on a free-tier host, per-minute token rate limits, reasoning
+models burning their whole completion budget and returning blank text
+that validated as 'grounded' — that taught me as much about running LLM
+systems in production as the retrieval design did."
+
+
+------------------------------------------------------------------------
+2. ARCHITECTURE WALKTHROUGH — ACTUAL DATA FLOW, FILE BY FILE
+------------------------------------------------------------------------
+
+Request enters at the API, not the graph:
+
+1. POST /chat (app/api.py:510 chat()) receives {session_id, question,
+   position?}. It loads the session row (db.get_session), and if the
+   client sent a new position (the UI can drag the slider and ask in one
+   gesture), it persists that FIRST via db.set_position — comment in the
+   code: "the session stays the single source of truth." Position is a
+   plain integer column on the `sessions` table (app/store/db.py schema).
+
+2. app.graph.ask(session_id, book_id, question, position) (app/graph.py:451)
+   invokes the compiled LangGraph with a fresh ReaderState — position is
+   written once here and never recomputed downstream.
+
+3. Node analyze_question (app/graph.py:150) calls
+   app.agents.analyzer.classify(question). This is a keyword-table lookup
+   first (app/agents/analyzer.py:_HINTS) — an LLM call only happens if
+   ANALYZER_USE_MODEL=1, which is off by default because intent is a
+   DISPLAY LABEL ONLY: it decorates a UI badge, never enters a prompt,
+   never steers retrieval or routing (explicitly commented in
+   app/config.py and analyzer.py).
+
+4. Node retrieve (app/graph.py:160) opens a DB connection and constructs
+   app.retrieval.firewall.SafeRetriever(conn, book_id, position). The
+   constructor immediately computes n_p = db.n_p_for_position(conn,
+   book_id, position) — a COUNT(*) of chunks WHERE word_end <= position
+   (app/store/db.py:n_p_for_position). Then retriever.search(question,
+   k=TOP_K=5) runs:
+     a. _vector_ids(): app.store.vectors.prefix(book_id, n_p) loads the
+        book's full (N, 384) matrix and slices it to the first n_p rows
+        — this slice IS the structural firewall (see section 3). Scores
+        = matrix @ embed_query(question); top-k by cosine.
+     b. _keyword_ids(): an FTS5 MATCH query against chunks_fts, joined to
+        chunks, with the predicate `c.idx < :n_p` in the SAME SQL
+        statement as the MATCH (app/retrieval/firewall.py:_keyword_ids).
+     c. app.retrieval.hybrid.fuse() combines both ranked lists with
+        Reciprocal Rank Fusion (RRF) — rank-only fusion, because cosine
+        [-1,1] and BM25 (unbounded) aren't on comparable scales.
+     d. _with_neighbours() widens each hit to idx±1 to restore
+        surrounding context, re-checking `0 <= neighbour < n_p` on every
+        expansion so this can't reach past the boundary either.
+     e. Evidence is re-sorted into narrative order (chunk.idx) — not
+        relevance order — because a model reads a scene better in the
+        order the reader met it.
+     f. assert_safe() re-checks every chunk's word_end <= position right
+        before returning, and RAISES FirewallBreach (doesn't filter) if
+        anything violates it — a defense-in-depth assertion, not the
+        primary mechanism.
+
+5. Node assess_evidence (app/graph.py:176) takes the max raw cosine
+   similarity across returned evidence and compares it to
+   SUFFICIENCY_FLOOR=0.30 (app/config.py). This is deliberately NOT the
+   RRF score — see section 3/5 for why.
+
+6. Conditional edge route_after_assess (app/graph.py:313): sufficient ->
+   answer, else -> spoiler_oracle.
+
+7a. Node answer (app/graph.py:214): app.agents.prompts.fit_to_budget()
+    trims evidence to MAX_EVIDENCE_CHARS=9000 (keeping the
+    highest-scoring seed passages first, then nearest neighbours, then
+    restoring narrative order), build_answer_prompt() assembles the
+    prompt, app.agents.llm.chat(ANSWER_SYSTEM, prompt, role="answer") is
+    the actual LLM call, and validator.normalise_citations() rewrites
+    any full-width/CJK citation brackets to ASCII. A provider exception
+    is caught here and stored as provider_error — explicitly NOT turned
+    into an "INSUFFICIENT" response (see section 6/5 for why that matters).
+
+8. Node validate (app/graph.py:249): app.agents.validator.check()
+   (app/agents/validator.py) — a deterministic citation-membership check
+   first, then an optional second LLM call (VALIDATOR_USE_MODEL) that
+   judges GROUNDED/UNGROUNDED against the full text of ONLY the cited
+   passages.
+
+9. Conditional edge route_after_validate (app/graph.py:329) — the real
+   control-flow heart of the graph; see section 4 for the full walk.
+
+10. Node spoiler_oracle (app/graph.py:202) calls
+    app.retrieval.oracle.answered_later(book_id, n_p, question)
+    (app/retrieval/oracle.py) — loads the FULL matrix (Store B),
+    compares max cosine of the question against the future slice
+    (rows n_p:) to the past slice (rows :n_p), and returns a bare bool.
+    No text ever leaves this function.
+
+11. Conditional edge route_after_oracle (app/graph.py:321): True ("this
+    is answered later, just not yet") -> refuse_spoiler; False ->
+    refuse_thin.
+
+12. Terminal nodes finalise / refuse_spoiler / refuse_thin / surface_error
+    each set `answer` and `outcome`, then -> END.
+
+13. ask() calls _log() (app/graph.py:471), which writes the FULL prompt
+    text plus its SHA-256 hash into the `conversations` table — this is
+    what lets test_graph.py::test_conversation_log_records_the_actual_prompt
+    assert the logged prompt matches what was actually sent, and it's
+    the audit trail the eval script and the "prompt leakage" metric read.
+
+14. Back in api.chat(), the response is reshaped into ChatOut — each
+    Evidence gets a page number derived from the BOOK's own
+    words_per_page (which can differ from the global 250-word default if
+    the reader has declared their print edition's page count via
+    PATCH /books/{id}/edition).
+
+
+------------------------------------------------------------------------
+3. THE CORE TECHNICAL DECISION: PREFIX-SLICE BY READING ORDER
+------------------------------------------------------------------------
+
+THE INVARIANT. At ingest (app/ingestion/chunker.py:chunk_book), the whole
+book is cut into chunks ONE TIME, in narrative order, before any reader
+position exists. `idx` is assigned sequentially and asserted monotonic in
+both word_start and word_end at insert time — not just trusted:
+app/store/db.py:insert_chunks() raises ValueError if two adjacent chunks
+violate ordering. That assertion is the foundation everything else rests
+on.
+
+THE STRUCTURAL BOUND. app/store/vectors.py stores one embedding matrix
+per book, where row i IS chunk idx==i (vectors.save/vectors.load). The
+function that matters is vectors.prefix(book_id, n_p) — it returns
+full[:n_p], a genuine NumPy slice. That slice has EXACTLY n_p rows; rows
+n_p and beyond are not merely masked or filtered, they are absent from
+the array object that similarity search operates on:
+
+    matrix = vectors.prefix(book_id, n_p)      # shape == (n_p, 384)
+    scores = matrix @ vectors.embed_query(question)
+
+A similarity search over `matrix` cannot return row n_p, for the same
+reason you can't index past the end of a Python list — the data isn't
+there. There is no `WHERE position <= P` on this path to forget, because
+"forgetting a WHERE clause" isn't a category of bug that applies to an
+array with fewer rows.
+
+THE ONE PLACE IT ISN'T STRUCTURAL. app/retrieval/firewall.py:_keyword_ids
+still needs `c.idx < :n_p` in the SQL statement, because FTS5 (SQLite's
+keyword index) is queried by predicate, not by slicing a physical array.
+The README calls this out explicitly as the one honest exception, and
+the codebase treats it accordingly: tests/test_firewall.py contains
+test_MUTATION_removing_the_keyword_bound_leaks, which literally re-runs
+the keyword query WITHOUT the predicate, asserts that it DOES leak future
+chunks, and then asserts assert_safe() catches them. That's a test whose
+job is to prove the *other* tests aren't vacuous — a firewall test suite
+that would still pass if you broke the firewall is worthless, so they
+built one that fails on purpose to prove the suite has teeth.
+
+WHY STRUCTURAL BEATS POST-HOC FILTERING — CONCRETELY.
+If retrieval instead ran top-k over the FULL matrix and then filtered
+results by position afterward, several classes of bug become possible
+that are simply not expressible with the prefix-slice approach:
+  - A code path added later (a new debug endpoint, a reranking step, a
+    logging call) that touches the pre-filter result set before the
+    filter runs. The filtered final ANSWER might still look safe while
+    future text has already reached a prompt, a log line, or a trace —
+    which matters because the project's hard metric is "prompt leakage
+    rate," not "answer leakage rate" (README: "the reveal text reaching
+    the prompt at all — must be 0%"). A filter guards the answer; a
+    missing row guards the prompt itself.
+  - Someone refactors or forgets the filter call in exactly one of
+    several retrieval call-sites (this is precisely what the mutation
+    test simulates for the keyword path) — the bug is silent because the
+    unfiltered code still "works," it just occasionally works unsafely.
+  - Off-by-one errors at the boundary chunk are easy to introduce and
+    hard to notice, because the filtered result set still looks
+    plausible (fewer results, not obviously wrong results).
+  - "Was this checked?" becomes a runtime property you have to trust
+    rather than a structural one you can prove from the shape of the
+    array. In this codebase, `assert_safe()` still exists as a SECOND,
+    redundant check right before content reaches a prompt — but it's
+    explicitly a raise-not-filter safety net (a silent filter there
+    "would conceal the very bug this system exists to prevent" —
+    app/retrieval/firewall.py docstring), not the primary mechanism.
+
+WHY word_end, NOT word_start. Chunks overlap by CHUNK_OVERLAP=40 words
+(app/config.py), so a chunk that STARTS before the reader's position can
+still contain words past it. The eligibility rule
+(app/store/db.py:n_p_for_position) is `word_end <= position` — the chunk
+must lie ENTIRELY behind the reader. This is conservative by up to one
+chunk's worth of the most recently read text, in exchange for keeping the
+eligible set an exact, provable prefix.
+
+
+------------------------------------------------------------------------
+4. LANGGRAPH ORCHESTRATION — THE ACTUAL GRAPH
+------------------------------------------------------------------------
+
+Defined in app/graph.py:build_graph() (~line 375). Topology, per the
+module's own docstring:
+  - two conditional branches: assess_evidence -> answer | spoiler_oracle,
+    and spoiler_oracle -> refuse_spoiler | refuse_thin
+  - one cycle: validate -> answer, bounded by retry_count
+  - one typed state: `position` is written once at entry and read-only
+    thereafter (ReaderState TypedDict, app/graph.py:83)
+
+NODES (app/graph.py, in call order):
+  analyze_question -> retrieve -> assess_evidence
+     -> [answer | spoiler_oracle]
+  answer -> validate
+     -> [finalise | answer (retry) | spoiler_oracle | surface_error]
+  spoiler_oracle -> [refuse_spoiler | refuse_thin]
+  finalise / refuse_spoiler / refuse_thin / surface_error -> END
+
+THE REFUSAL PATH, EXACTLY WHERE IT TRIGGERS:
+There are TWO distinct entry points into spoiler_oracle — both are the
+"ask me again later" gate:
+
+  (1) route_after_assess (app/graph.py:313) — evidence never cleared the
+      cheap cosine floor at all: `"answer" if state["evidence_sufficient"]
+      else "spoiler_oracle"`.
+
+  (2) route_after_validate (app/graph.py:329) — the more interesting one.
+      This function is the REAL sufficiency judge, per its own docstring:
+      "The answer agent is the real sufficiency judge. It has read the
+      passages; a cosine threshold has not." Its logic, in priority order:
+        - if state["provider_error"]: -> surface_error (never dress a
+          broken API call as a refusal — see section 5/6)
+        - if draft.strip().upper().startswith("INSUFFICIENT"):
+          -> spoiler_oracle  <-- the model itself declined
+        - if validation_reason == "grounded": -> finalise (success)
+        - if retry_count >= MAX_VALIDATION_RETRIES (2):
+          -> spoiler_oracle  <-- exhausted retries, give up gracefully
+        - else: -> answer (loop back and retry, retry_count incremented
+          in the validate node itself)
+
+  Once inside spoiler_oracle, route_after_oracle (app/graph.py:321) is
+  binary: `answered_later(...)` True -> refuse_spoiler (REFUSAL_SPOILER:
+  "...Ask me again once you're further in."); False -> refuse_thin
+  (REFUSAL_THIN: "...it may not be spelled out until later.").
+
+So the graph never fabricates a refusal from a shrug — it always
+consults the air-gapped oracle to decide WHICH of the two refusal
+messages is honest, and the oracle is the only node in the whole graph
+that is deliberately not an LLM call (app/retrieval/oracle.py docstring:
+"the only value that crosses back is a boolean").
+
+
+------------------------------------------------------------------------
+5. HARD PROBLEMS YOU LIKELY HIT (AND HOW THE CODE HANDLES THEM)
+------------------------------------------------------------------------
+
+A. CHUNK BOUNDARIES VS. OVERLAP.
+   Problem: overlapping chunks (320 words, 40-word overlap,
+   app/config.py) mean "chunk idx started before position" doesn't imply
+   "chunk is fully readable."
+   Handling: bound on word_end, not word_start
+   (app/store/db.py:n_p_for_position; documented at length in README).
+   Cost: conservative by ~one chunk of freshly-read text.
+
+B. CITATION VERIFICATION.
+   Problem: models cite inconsistently — full-width/CJK brackets
+   (【c00065】, gpt-oss-120b does this often), grouped ids ([c1, c2]), and
+   copy the example's book-prefix literally ("bk::c00042" instead of the
+   real id) — CHALLENGES.md documents all of these as real incidents.
+   Handling (app/agents/validator.py):
+     - normalise_citations() rewrites bracket glyph variants to ASCII
+       BEFORE parsing (fixes both validation and the reader's rendered
+       copy in one place).
+     - _resolve() extracts ids leniently on FORMAT, then falls back to
+       matching on the chunk-id SUFFIX when the full id (with book
+       prefix) isn't in the allowed set — but membership against the
+       allowed set stays a strict set test either way, so a fabricated
+       id can never resolve to something real.
+     - check() rejects an EMPTY draft outright (an earlier bug let an
+       empty draft validate as "grounded" — vacuous truth: no claims, so
+       nothing unsupported).
+     - the model-based GROUNDED/UNGROUNDED check is shown the FULL text
+       of only the CITED passages, not a 400-char truncation of
+       everything — an earlier version truncated to ~23% of a chunk and
+       vetoed correct answers.
+   Tests: tests/test_citations.py pins both halves (lenient format,
+   strict membership) with a parametrized sweep over bracket glyphs.
+
+C. ANSWERS THAT NEED INFO SPANNING THE READ/UNREAD BOUNDARY.
+   Problem: what if the true answer needs one fact you've read and one
+   you haven't?
+   Handling: there is no partial-answer mode — retrieval structurally
+   cannot see the unread fact (section 3), so the model either answers
+   fully grounded in what IS eligible, or replies INSUFFICIENT and falls
+   into the oracle path. README calls the general shape of this out as a
+   known limitation ("Scattered evidence degrades... a reranking
+   problem, not a model-size problem") rather than claiming it's solved.
+
+D. RE-READING / MOVING POSITION BACKWARD.
+   Problem: does "un-reading" (dragging the slider back) actually shrink
+   the eligible set?
+   Handling: yes, by construction — n_p is deliberately NOT stored
+   anywhere (app/store/db.py comment: "a stored copy goes stale the
+   moment a book is re-ingested with different chunking"); it's
+   recomputed fresh from `position` on every SafeRetriever construction.
+   Advancing position only ever WIDENS the set — asserted directly by
+   test_firewall.py::test_advancing_position_only_widens_the_eligible_set
+   and test_spoilers.py::test_eligible_text_grows_monotonically.
+
+E. UPDATING "CURRENT POSITION."
+   Two paths: PATCH /sessions/{id}/position (app/api.py:update_position,
+   accepting either a raw word offset or a page number, converted via the
+   book's own words_per_page), and inline via ChatIn.position on /chat
+   itself — persisted to the session BEFORE the graph runs, specifically
+   so a single "drag slider and ask" gesture can't race against a stale
+   position (api.py comment: "the session stays the single source of
+   truth").
+
+F. WHAT "ALREADY READ" ACTUALLY MEANS.
+   Problem: this is a genuine, unaddressed gap, worth naming yourself
+   before an interviewer does. Position is just a UI-reported word
+   offset — there's no comprehension, attention, or skim-detection
+   model. Dragging the slider to the end unlocks the whole book
+   instantly, whether or not the reader actually read any of it.
+
+G. SUFFICIENCY THRESHOLDING (why NOT to trust a cheap embedding
+   statistic). README's "Two findings worth knowing" section documents
+   this as a real dead end they hit: thresholding the fused RRF score
+   let everything through (RRF encodes RANK ONLY — an unrelated top hit
+   scores identically to a genuinely relevant one), and even switching to
+   raw cosine wasn't corpus-independent (bge-small scores 0.455 for
+   "capital of Peru?" against Sherlock Holmes; the novella's own
+   off-topic control OUT-scored its real questions). Resolution: push
+   the real judgment to the LLM that can actually read the passages
+   (INSUFFICIENT reply), and keep SUFFICIENCY_FLOOR=0.30 only as a cheap
+   screen for degenerate cases (empty evidence, near-zero similarity).
+
+H. NEIGHBOUR EXPANSION AS A LEAK VECTOR.
+   Widening retrieved hits to idx±1 for context (firewall.py:
+   _with_neighbours) is exactly the kind of feature that could
+   accidentally reach past the boundary if written carelessly. It's
+   guarded inline: `if 0 <= neighbour < self._n_p` on every candidate,
+   same prefix bound as everything else — worth mentioning as a place
+   you specifically thought about the blast radius of a "helper" feature.
+
+I. PROVIDER FAILURES MASQUERADING AS CORRECT SPOILER-SAFE BEHAVIOUR.
+   Not a classic RAG problem, but a real one you hit: an earlier version
+   caught LLM provider exceptions and returned "INSUFFICIENT," which
+   routed straight into the refusal path — an outage then scored as
+   100% refusal accuracy in the eval. Fixed by adding a fourth, distinct
+   Outcome — "error" — with its own node (surface_error,
+   app/graph.py:273) and its own routing priority (checked FIRST in
+   route_after_validate, before INSUFFICIENT is even inspected).
+
+
+------------------------------------------------------------------------
+6. LIKELY INTERVIEWER FOLLOW-UPS, BY THEME
+------------------------------------------------------------------------
+
+SYSTEM DESIGN
+  Q: "Why LangGraph instead of an if/else pipeline?"
+  A: The graph has genuine branching a linear chain can't express
+     cleanly: two conditional routes plus a bounded retry cycle
+     (validate -> answer). Point to graph.py's own docstring, which
+     states this directly, and to route_after_validate's four-way branch
+     as the concrete example.
+
+  Q: "Why is the 'future book' data (Store B) reachable at all — why not
+      just never load it?"
+  A: You need SOME way to distinguish "not yet" from "not in this book"
+     — otherwise every refusal reads as "not enough evidence," which is
+     a worse user experience and, more importantly, an honesty problem.
+     The design's answer is to confine that capability to one function
+     (oracle.answered_later) with a boolean-only return type, so there's
+     no code path by which future prose can reach a prompt through it.
+
+  Q: "How would this scale to thousands of concurrent readers?"
+  A: Talk about the actual split: expensive per-BOOK state (chunk table,
+     FTS index, one embedding matrix) is shared; per-SESSION state is a
+     single integer. Then be honest about the real bottlenecks you'd hit
+     first: SQLite is single-writer (WAL allows concurrent reads but
+     ingestion holds a write lock for minutes — app/store/db.py
+     connect() docstring), and the embedding model is one ONNX session
+     behind a single lock (_model_lock in embedders.py) — every question
+     embedding serializes through it in-process.
+
+  Q: "Why not a real vector database?"
+  A: Books are a few MB; the prefix-slice safety property is trivial to
+     express and verify against a NumPy array in one process, and much
+     harder to guarantee against a general-purpose vector store that
+     wasn't designed around "the unread rows must not exist in the
+     queryable object." Right-sized for one demo library, not a
+     many-tenant catalog — be upfront that this is a scope decision, not
+     a belief that SQLite+NumPy is the answer at any scale.
+
+ML / RAG FUNDAMENTALS
+  Q: "Why hybrid (vector + keyword) retrieval?"
+  A: Vector search misses exact named entities/terms sometimes; keyword
+     search misses paraphrase. RRF fuses the two ranked lists without
+     needing to reconcile cosine's [-1,1] range against BM25's unbounded
+     range (hybrid.py docstring) — this is why RRF and not a weighted
+     score blend.
+
+  Q: "Why is the sufficiency gate on cosine, not on the fused score?"
+  A: This is the "Two findings worth knowing" story in the README — walk
+     through it: RRF encodes rank only, so a totally unrelated top-1
+     result scores identically to a genuinely relevant one, and
+     thresholding it made the refusal branch literally unreachable.
+
+  Q: "Would you add reranking?"
+  A: Yes — it's an explicitly named, unimplemented gap ("Scattered
+     evidence degrades... a reranking problem, not a model-size
+     problem," and separately, retrieval recall on the eval novella is
+     measured at only 50%). Good place to talk about what a
+     cross-encoder rerank step would buy you and where you'd insert it
+     (after fuse(), before _with_neighbours()).
+
+  Q: "How did you choose the embedding model?"
+  A: bge-small-en-v1.5, 384-dim, via fastembed/ONNX — chosen primarily
+     for a ~190MB memory footprint on a 512MB container (CHALLENGES.md
+     §6), not for best-in-class retrieval quality. Be honest that this
+     was a resource trade-off, not an accuracy-driven choice.
+
+TRADE-OFFS
+  Q: "Walk me through a trade-off you made deliberately."
+  A: CHUNK_OVERLAP 80 -> 40 words (config.py comment + CHALLENGES.md
+     §6b): halves embedding compute (~10% faster ingest) on a
+     fractional-CPU host, at the cost of some cross-seam continuity —
+     which neighbour expansion at retrieval time already partly
+     compensates for. Good example of a change made for one reason
+     (memory/CPU) that also happens to be a retrieval-quality knob.
+
+  Q: "What did turning on the model-based citation validator cost you?"
+  A: Roughly 2x the token cost per turn (a second LLM call) in exchange
+     for catching paraphrased-but-unsupported claims the deterministic
+     citation-membership check can't see. VALIDATOR_USE_MODEL is a flag
+     specifically so you can drop back to deterministic-only under a
+     tight rate limit.
+
+SCALING
+  Q: "What's the actual per-question cost, and what breaks first under
+      load?"
+  A: Recite the README's free-tier arithmetic: Groq's free tier is 8,000
+     TPM / 200,000 TPD per model; at ~2,200 tokens per answer call that's
+     roughly 3 turns/minute, and a day's budget is gone in ~45 turns of
+     dev use. The mitigations are concrete and in the code: per-node
+     model routing (answer vs. fast use different models -> separate
+     quota buckets), MAX_EVIDENCE_CHARS tuned down to 9,000 chars, and a
+     token-bucket forecast in app/agents/llm.py (_reserve/_observe) that
+     queues locally instead of firing blind and eating 429s.
+
+  Q: "What happened when you actually deployed this?"
+  A: This is where CHALLENGES.md is gold — walk through the OOM story
+     (§6): `parallel=1` in fastembed silently spawns a SECOND process
+     holding a second copy of the model (measured: 190MB parent + 614MB
+     child ≈ 804MB, over the 512MB cap), fixed by defaulting to
+     in-process embedding; batch_size 32->8 dropped peak RSS from 632MB
+     to 300MB for ~10% more time; `os.cpu_count()` doesn't read the
+     cgroup quota inside a container, so thread counts sized off it were
+     wildly wrong. Then §6b: even after fixing memory, CPU on a
+     fractional-core instance meant ingestion itself had to be moved
+     OFFLINE entirely (ALLOW_RUNTIME_INGEST=0 in production; the library
+     ships as a prebuilt seed via scripts/build_seed.py).
+
+FAILURE MODES
+  Q: "Tell me about a bug that looked like something else."
+  A: Several good, real ones, all in CHALLENGES.md and echoed in
+     README's "Integration bugs" table:
+       - provider errors silently becoming "INSUFFICIENT" refusals,
+         which an eval then scored as 100% correct spoiler-safe behavior
+         (fixed with the distinct "error" outcome);
+       - gpt-oss reasoning models spending their entire completion
+         budget on hidden reasoning tokens and returning EMPTY content,
+         which an earlier validator scored as "grounded" (no claims, no
+         unsupported claims — vacuous truth);
+       - citations arriving as [c1, c2] or with the prompt's own example
+         prefix "bk::" copied literally, both initially misclassified as
+         "no citation" and burning both retries before refusing a
+         question the model had actually answered correctly.
+     The throughline you should name explicitly: several of these bugs
+     manifested as PLAUSIBLE, CORRECT-LOOKING spoiler-safe behavior — the
+     dangerous failure mode in a safety-oriented system isn't a crash,
+     it's a wrong answer that looks like the system working as intended.
+
+
+------------------------------------------------------------------------
+7. WEAKNESSES / HONEST LIMITATIONS — SPECIFIC TO THIS CODEBASE
+------------------------------------------------------------------------
+
+1. CHUNKING IS SIZE-DRIVEN, NOT SEMANTICS-DRIVEN. 320 words,
+   sentence-boundary-respecting, never crosses a chapter break — but
+   otherwise oblivious to scene or paragraph structure. The 320-word
+   figure was chosen because 200-word chunks were observed cutting off
+   mid-exchange (config.py comment); the 40-word overlap was chosen to
+   halve ingest compute on a memory-constrained host (CHALLENGES §6b),
+   not because it was measured to be retrieval-optimal. Retrieval recall
+   on the eval novella is measured at only 50% — the README attributes
+   this directly to chunk dilution (a one-sentence fact inside a
+   200-300 word chunk doesn't always rank into top-8 even when eligible).
+
+2. EMBEDDING MODEL CHOSEN FOR FOOTPRINT, NOT ACCURACY. bge-small-en-v1.5
+   (69MB) was picked because it's the smallest model fastembed serves and
+   the app's memory high-water mark is the binding constraint on a
+   512MB container — not because it benchmarks best for retrieval
+   quality. This is explicitly acknowledged, not hidden, in
+   CHALLENGES.md §6b.
+
+3. SQLITE + LOCAL NUMPY FILES AS THE STORE. Fine for one demo library;
+   doesn't scale to multiple writer instances (SQLite is single-writer,
+   even under WAL); and on the actual free-tier deployment, disk is
+   EPHEMERAL — the "live" index isn't durable at all, it's rebuilt from
+   a checked-in `seed/` directory on every boot (app/store/seed.py +
+   CHALLENGES.md §7). Anything ingested at runtime in production is lost
+   on the next restart unless someone re-runs scripts/build_seed.py and
+   commits it.
+
+4. LATENCY. Worst case is not fast: up to 3 answer calls plus up to 3
+   validator calls (MAX_VALIDATION_RETRIES=2) plus the oracle's matrix
+   multiply plus an optional analyzer call — all sequential, no
+   streaming, no parallelizing the retry loop. A "thin evidence"
+   question pays for a full failed answer attempt before it even reaches
+   the oracle.
+
+5. "ALREADY READ" IS A UI-REPORTED OFFSET, NOT A COMPREHENSION MODEL.
+   There is zero signal about whether the reader actually read the text
+   up to that offset, skimmed it, or dragged the slider straight to the
+   end. The system's real guarantee is narrower than it sounds: "will
+   not show you text past the position you told it," not "will not spoil
+   you on anything you haven't actually absorbed."
+
+6. EVALUATION IS ONE SYNTHETIC NOVELLA, SIX FACTS. The eval harness
+   (scripts/make_novella.py, scripts/evaluate.py, tests/test_spoilers.py)
+   is deliberately synthetic — real books are confounded because an LLM
+   may already know Pride and Prejudice's plot, so a correct answer
+   might come from memory rather than retrieval. That's the right call
+   methodologically, but be ready to name its limits unprompted: it's
+   15,502 words, one genre (mystery), six planted facts — a small,
+   narrow sample, and the reported metrics (leakage rate, refusal
+   accuracy, 50% retrieval recall) all come from that one fixture. The
+   four real Gutenberg books shipped in data/raw/ are exercised
+   functionally (ingestion tests) but not leakage-evaluated
+   quantitatively.
+
+7. PARAMETRIC LEAKAGE IS MEASURED, NOT SOLVED. The firewall can only
+   control what's FED to the model, never what a large model already
+   knows about a famous novel. scripts/evaluate.py --empty-probe
+   measures this directly (asks the golden questions with ZERO evidence
+   supplied) and reports a number rather than claiming a guarantee — the
+   README states this outright: "the firewall cannot prevent a model
+   from knowing a famous book, only from being fed it." This is worth
+   raising yourself, since it's the single most likely "gotcha" question
+   a sharp interviewer will reach for.
+
+8. THE REFUSAL ITSELF LEAKS ABOUT ONE BIT. Saying "I can't answer
+   without spoiling" already tells the reader the thing DOES get
+   resolved later — there's no way to phrase a true refusal that doesn't
+   imply that. The mitigation is cosmetic-only: both refusal branches
+   (refused_spoiler vs refused_thin) render IDENTICALLY in the UI and
+   are distinguished only internally, for eval logging — a reader can't
+   tell which one fired.
+
+9. THE ORACLE'S THRESHOLD IS A HAND-TUNED MAGIC NUMBER ON THE SAME
+   METRIC ALREADY SHOWN TO BE UNRELIABLE. ORACLE_THRESHOLD=0.62 with a
+   0.05 margin (config.py) is cosine similarity — the exact same
+   statistic the README spends a whole section explaining CANNOT
+   reliably separate on-topic from off-topic content across corpora
+   (the "capital of Peru scores 0.455 against Sherlock Holmes" finding).
+   The oracle's boolean is only as trustworthy as that threshold, and
+   unlike SUFFICIENCY_FLOOR, there's no LLM-based second opinion behind
+   it — a good interviewer could reasonably ask "then why do you trust
+   the oracle's number any more than you trusted the sufficiency
+   gate's?" and the honest answer is: you trust it a bit more because
+   the margin (future_best must beat past_best by 0.05) is a relative,
+   not absolute, comparison, but it's still the least-tested threshold
+   in the system.
+
+
+------------------------------------------------------------------------
+8. THE ONE-SENTENCE METAPHOR
+------------------------------------------------------------------------
+
+"It's like photocopying only the pages of the book you've already read,
+stapling that stack together, and handing THAT to a friend to answer your
+questions — they can't spoil you by accident, because the rest of the
+book was never in the room to begin with."
+
+(The key idea to preserve if you shorten it further: the safety comes
+from what's physically present, not from the friend being told what not
+to say.)
+
+========================================================================
+END OF BRIEF
+========================================================================
